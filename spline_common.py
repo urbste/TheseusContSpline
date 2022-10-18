@@ -1,6 +1,6 @@
 import numpy as np
 import math
-
+import torch
 # def C_n_k(n, k):
 #     if k > n:
 #         return 0   
@@ -53,6 +53,7 @@ def computeBaseCoefficients(N):
         order -= 1
 
     return base_coeffs
+
 
 
 print(computeBaseCoefficients(5))
