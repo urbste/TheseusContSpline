@@ -1,8 +1,9 @@
 
 import theseus as th
 import torch
-from spline_common import computeBaseCoefficients
+from spline_common import computeBaseCoefficients, computeBaseCoefficientsWithTime
 from spline_common import computeBlendingMatrix
+from spline_common import baseCoeffsWithTime
 from time_util import calc_times, S_TO_NS
 
 class SO3Spline:
@@ -42,32 +43,20 @@ class SO3Spline:
             pow_inv_dt[i] = pow_inv_dt[i - 1] * pow_inv_dt[1]
         self.pow_inv_dt = th.Vector(tensor=pow_inv_dt, name="pow_inv_dt")
 
-    def baseCoeffsWithTime(self, derivative, u):
-        res = torch.zeros(self.N,1).float()
-
-        if derivative < self.N:
-            res[derivative] = self.base_coeffs[derivative, derivative]
-            _t = u
-            for j in range(derivative+1, self.N):
-                res[j] = self.base_coeffs[derivative, j] * _t
-                _t = _t * u
-
-        return res
-
     def evaluate(self, time_ns):
 
         u, s, suc = calc_times(time_ns, 
             self.start_time_ns, self.dt_ns, 
             len(self.knots), self.N)  
-        res = torch.zeros(1, self.DIM).float()
+
+        res = self.knots[s]
 
         if not suc:
             print("WRONG TIME")
             return res
 
-        p = self.baseCoeffsWithTime(0, u)
+        p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, 0, u)
         coeff = self.blend_matrix.tensor @ p
-        res = self.knots[s]
 
         for i in range(self.DEG):
             p0 = self.knots[s + i]
@@ -88,10 +77,10 @@ class SO3Spline:
             print("WRONG TIME")
             return res
 
-        p = self.baseCoeffsWithTime(0, u)
+        p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, 0, u)
         coeff = self.blend_matrix.tensor @ p
 
-        p = self.baseCoeffsWithTime(1, u)
+        p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, 1, u)
         dcoeff = self.pow_inv_dt.tensor[:,1] * self.blend_matrix.tensor @ p 
 
         rot_vel = torch.zeros(3).float()
@@ -116,13 +105,13 @@ class SO3Spline:
             print("WRONG TIME")
             return res
 
-        p = self.baseCoeffsWithTime(0, u)
+        p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, 0, u)
         coeff = self.blend_matrix.tensor @ p
 
-        p = self.baseCoeffsWithTime(1, u)
+        p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, 1, u)
         dcoeff = self.pow_inv_dt.tensor[:,1] * self.blend_matrix.tensor @ p 
 
-        p = self.baseCoeffsWithTime(2, u)
+        p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, 2, u)
         ddcoeff = self.pow_inv_dt.tensor[:,2] * self.blend_matrix.tensor @ p 
         
         rot_vel = torch.zeros(3).float()

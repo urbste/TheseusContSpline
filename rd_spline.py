@@ -3,7 +3,9 @@ import theseus as th
 import torch
 from spline_common import computeBaseCoefficients
 from spline_common import computeBlendingMatrix
+from spline_common import computeBaseCoefficientsWithTime
 from time_util import calc_times, S_TO_NS
+
 
 class RDSpline:
     def __init__(self, start_time_ns, end_time_ns, dt_ns, dim=3, N=4):
@@ -25,8 +27,6 @@ class RDSpline:
             tensor=torch.tensor(computeBaseCoefficients(self.N)), 
             name="base_coeffs")
 
-        self.start_time_ns = 0
-
         # vector of knots. should be th.Vector
         self.knots = []
 
@@ -42,18 +42,6 @@ class RDSpline:
             pow_inv_dt[i] = pow_inv_dt[i - 1] * pow_inv_dt[1]
         self.pow_inv_dt = th.Vector(tensor=pow_inv_dt, name="pow_inv_dt")
 
-    def baseCoeffsWithTime(self, derivative, u):
-        res = torch.zeros(self.N,1).float()
-
-        if derivative < self.N:
-            res[derivative] = self.base_coeffs[derivative, derivative]
-            _t = u
-            for j in range(derivative+1, self.N):
-                res[j] = self.base_coeffs[derivative, j] * _t
-                _t = _t * u
-
-        return res
-
     def evaluate(self, time_ns, derivative=0):
 
         u, s, suc = calc_times(time_ns, 
@@ -64,7 +52,7 @@ class RDSpline:
         if not suc:
             print("WRONG TIME")
             return res
-        p = self.baseCoeffsWithTime(derivative, u)
+        p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, derivative, u)
         coeff = self.pow_inv_dt.tensor[:,derivative] * (self.blend_matrix.tensor @ p)
 
         for i in range(self.N):
@@ -79,7 +67,7 @@ class RDSpline:
         return self.evaluate(time_ns, 2)
 
     def genRandomTrajectory(self,):
-        num_knots = int((self.end_time_ns - self.start_time_ns) / self.dt_ns)
+        num_knots = int((self.end_time_ns - self.start_time_ns) / self.dt_ns) + self.N
         for i in range(num_knots):
             self.knots.append(
                 th.Vector(tensor=torch.randn(1,self.DIM), 

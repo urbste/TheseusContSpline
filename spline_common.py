@@ -54,8 +54,14 @@ def computeBaseCoefficients(N):
 
     return base_coeffs
 
+def computeBaseCoefficientsWithTime(N, base_coeffs, derivative, u):
+    res = torch.zeros(N,1).float()
 
+    if derivative < N:
+        res[derivative] = base_coeffs[derivative, derivative]
+        _t = u
+        for j in range(derivative+1, N):
+            res[j] = base_coeffs[derivative, j] * _t
+            _t = _t * u
 
-print(computeBaseCoefficients(5))
-print(computeBlendingMatrix(5, False))
-print(computeBlendingMatrix(5, True))
+    return res
