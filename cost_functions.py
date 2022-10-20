@@ -13,9 +13,12 @@ def spline_position_error(optim_vars, aux_vars):
     pos_measurement = aux_vars[0].tensor
     u = aux_vars[1].tensor
     inv_dt = aux_vars[2].tensor
-    knots = [knot.tensor for knot in optim_vars]
-
-    spline_position = spline_helper.evaluate_euclidean(knots, u, inv_dt, 0)
+    knots_list = [knot.tensor for knot in optim_vars]
+    knots = torch.cat(knots_list,0)
+    spline_dim = len(knots_list)
+    vector_dim = 2
+    knots = knots.reshape(spline_dim, len(u), vector_dim)
+    spline_position = spline_helper.evaluate_euclidean_vec(knots, u, inv_dt, 0, len(u))
     return spline_position - pos_measurement
 
 # class PositionError2(th.CostFunction):

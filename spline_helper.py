@@ -1,6 +1,6 @@
 import torch
 import theseus as th
-from spline_common import computeBaseCoefficients
+from spline_common import computeBaseCoefficients, computeBaseCoefficientsWithTimeVec
 from spline_common import computeBlendingMatrix
 from spline_common import computeBaseCoefficientsWithTime
 
@@ -80,6 +80,26 @@ class SplineHelper:
 
         for i in range(self.N):
             res += coeff[i] * rd_knots[i].tensor
+
+        return res
+
+    def evaluate_euclidean_vec(self,
+        rd_knots,
+        u,
+        inv_dt,
+        derivative=0,
+        num_meas=0):
+
+        p = computeBaseCoefficientsWithTimeVec(
+            self.N, self.base_coefficients, derivative, u, num_meas)
+        pow_inv_dt = inv_dt ** derivative
+
+        coeff = pow_inv_dt * (self.blending_matrix @ p)
+
+        scaled = coeff.unsqueeze(-1) * rd_knots
+        res = torch.sum(scaled,0)
+        # for i in range(self.N):
+        #     res += coeff[i] * rd_knots[i].tensor
 
         return res
 
