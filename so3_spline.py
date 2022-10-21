@@ -3,7 +3,7 @@ import theseus as th
 import torch
 from spline_common import computeBaseCoefficients, computeBaseCoefficientsWithTime
 from spline_common import computeBlendingMatrix
-from spline_common import baseCoeffsWithTime
+from spline_common import computeBaseCoefficientsWithTime
 from time_util import calc_times, S_TO_NS
 
 class SO3Spline:
@@ -25,8 +25,6 @@ class SO3Spline:
         self.base_coeffs = th.Variable(
             tensor=torch.tensor(computeBaseCoefficients(self.N)), 
             name="base_coeffs")
-
-        self.start_time_ns = 0
 
         # vector of knots. should be th.Vector
         self.knots = []
@@ -137,28 +135,28 @@ class SO3Spline:
 
 
     def genRandomTrajectory(self,):
-        num_knots = int((self.end_time_ns - self.start_time_ns) / self.dt_ns)
+        num_knots = int((self.end_time_ns - self.start_time_ns) / self.dt_ns) + self.N
         for i in range(num_knots):
             self.knots.append(
                 th.SO3(name="so3_knot_"+str(i)).randn(1))
 
         
 
-# test
-so3_spline = SO3Spline(0, 5*S_TO_NS, 0.1*S_TO_NS, 3, 4)
-so3_spline.genRandomTrajectory()
+# # test
+# so3_spline = SO3Spline(0, 5*S_TO_NS, 0.1*S_TO_NS, 3, 4)
+# so3_spline.genRandomTrajectory()
 
-print(so3_spline.evaluate(0*S_TO_NS))
-print(so3_spline.evaluate(1*S_TO_NS))
-print(so3_spline.evaluate(2*S_TO_NS))
+# print(so3_spline.evaluate(0*S_TO_NS))
+# print(so3_spline.evaluate(1*S_TO_NS))
+# print(so3_spline.evaluate(2*S_TO_NS))
 
-so3_spline = SO3Spline(0, 5*S_TO_NS, 0.1*S_TO_NS, 2, 5)
-so3_spline.genRandomTrajectory()
+# so3_spline = SO3Spline(0, 5*S_TO_NS, 0.1*S_TO_NS, 2, 5)
+# so3_spline.genRandomTrajectory()
 
-print(so3_spline.evaluate(0*S_TO_NS))
-print(so3_spline.evaluate(1*S_TO_NS))
-print(so3_spline.evaluate(2*S_TO_NS))
-print(so3_spline.velocityBody(2*S_TO_NS))
-print(so3_spline.accelerationBody(2*S_TO_NS))
+# print(so3_spline.evaluate(0*S_TO_NS))
+# print(so3_spline.evaluate(1*S_TO_NS))
+# print(so3_spline.evaluate(2*S_TO_NS))
+# print(so3_spline.velocityBody(2*S_TO_NS))
+# print(so3_spline.accelerationBody(2*S_TO_NS))
 
-print(so3_spline.evaluate(6*S_TO_NS))
+# print(so3_spline.evaluate(6*S_TO_NS))

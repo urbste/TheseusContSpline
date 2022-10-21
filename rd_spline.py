@@ -52,6 +52,7 @@ class RDSpline:
         if not suc:
             print("WRONG TIME")
             return res
+            
         p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, derivative, u)
         coeff = self.pow_inv_dt.tensor[:,derivative] * (self.blend_matrix.tensor @ p)
 

@@ -13,7 +13,7 @@ def calc_times(sensor_time_ns, start_time_ns, dt_ns, nr_knots, N):
         return u, s, False
 
     
-    s = torch.tensor(st_ns / dt_ns, dtype=torch.int)
+    s = (st_ns / dt_ns).int()
 
     if s < 0:
         return u, torch.tensor(0, dtype=torch.int), False

@@ -103,3 +103,46 @@ class SplineHelper:
 
         return res
 
+    def evaluate_lie_vec(self,
+        so3_knots,
+        u,
+        inv_dt, 
+        derivative,
+        num_meas=0):
+
+        p = computeBaseCoefficientsWithTimeVec(
+            self.N, self.base_coefficients, derivative=0, u=u,num_pts=num_meas)
+        coeff = self.cumulative_blending_matrix @ p
+        if derivative >= 1:
+            p = computeBaseCoefficientsWithTimeVec(
+                self.N, self.base_coefficients, derivative=1, u=u,num_pts=num_meas)
+            dcoeff = inv_dt * self.cumulative_blending_matrix @ p
+        if derivative >= 2:
+            p = computeBaseCoefficientsWithTimeVec(
+                self.N, self.base_coefficients, derivative=2, u=u,num_pts=num_meas)
+            ddcoeff = inv_dt * inv_dt * self.cumulative_blending_matrix @ p
+
+        transform_out = th.SO3(tensor=so3_knots[0])
+
+        rot_vel, rot_accel = th.Vector(3), th.Vector(3)
+
+        for i in range(0, self.DEG):
+            p0 = th.SO3(tensor=so3_knots[i])
+            p1 = th.SO3(tensor=so3_knots[i + 1])
+            r01 = p0.inverse().compose(p1)
+            delta = r01.log_map()
+            kdelta = coeff[i+1].unsqueeze(1) * delta
+            exp_kdelta = th.SO3.exp_map(tangent_vector=kdelta)
+            transform_out.compose(exp_kdelta)
+
+            if derivative >= 1:
+                Adj = exp_kdelta.inverse().adjoint()
+                rot_vel = Adj.to_matrix() * rot_vel
+                rot_vel_current =dcoeff[i + 1].unsqueeze(1) * delta 
+                rot_vel += rot_vel_current
+            if derivative >= 2:
+                rot_accel = Adj @ rot_accel
+                accel_lie_bracket = torch.cross(rot_vel.tensor, rot_vel_current.tensor)
+                rot_accel += ddcoeff[i + 1].unsqueeze(1) * delta + accel_lie_bracket
+
+        return transform_out, rot_vel, rot_accel

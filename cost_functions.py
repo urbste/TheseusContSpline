@@ -21,6 +21,18 @@ def spline_position_error(optim_vars, aux_vars):
     spline_position = spline_helper.evaluate_euclidean_vec(knots, u, inv_dt, 0, len(u))
     return spline_position - pos_measurement
 
+def spline_rot_error(optim_vars, aux_vars):
+
+    R_w_s_measured = aux_vars[0].tensor
+    u = aux_vars[1].tensor
+    inv_dt = aux_vars[2].tensor
+    knots_list = [knot.tensor for knot in optim_vars]
+    knots = torch.cat(knots_list,0)
+    spline_dim = len(knots_list)
+    knots = knots.reshape(spline_dim, len(u), 3, 3)
+    R_w_s = spline_helper.evaluate_lie_vec(knots, u, inv_dt, 0, len(u))[0]
+    return th.SO3(tensor=R_w_s_measured).compose(R_w_s.inverse()).log_map() # th.Between(R_w_s, R_w_s_measured, )
+
 # class PositionError2(th.CostFunction):
 #     def __init__(
 #         self,
