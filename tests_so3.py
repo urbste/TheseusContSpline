@@ -4,7 +4,7 @@ import theseus as th
 import torch
 from scipy.spatial.transform import Rotation as R
 import numpy as np
-from cost_functions import spline_rot_error
+from cost_functions import so3_error
 
 from so3_spline import SO3Spline
 from spline_helper import SplineHelper
@@ -19,7 +19,7 @@ dt_points = 0.2 * S_TO_NS
 DIM = 3
 N = 4
 
-test_spline = SO3Spline(start_tns, end_tns, dt_ns=dt_ns, dim=DIM, N=N)
+test_spline = SO3Spline(start_tns, end_tns, dt_ns=dt_ns, N=N)
 test_spline.genRandomTrajectory()
 s_knots = test_spline.knots
 
@@ -61,7 +61,7 @@ for k, rot_m in enumerate(rot_measurments_noisy):
         optim_vars.append(test_spline.knots[i + s])
 
     cost_function = th.AutoDiffCostFunction(
-        optim_vars, spline_rot_error, DIM, aux_vars=aux_vars, name="pos_cost_"+str(k), 
+        optim_vars, so3_error, DIM, aux_vars=aux_vars, name="pos_cost_"+str(k), 
         autograd_vectorize=True, autograd_mode=th.AutogradMode.LOOP_BATCH
     )
     objective.add(cost_function)

@@ -77,21 +77,21 @@ class RDSpline:
         
 
 # test
-r3_spline = RDSpline(0, 5*S_TO_NS, 0.1*S_TO_NS, 3, 4)
-r3_spline.genRandomTrajectory()
+# r3_spline = RDSpline(0, 5*S_TO_NS, 0.1*S_TO_NS, 3, 4)
+# r3_spline.genRandomTrajectory()
 
-print(r3_spline.evaluate(0*S_TO_NS))
-print(r3_spline.evaluate(1*S_TO_NS))
-print(r3_spline.evaluate(2*S_TO_NS))
+# print(r3_spline.evaluate(0*S_TO_NS))
+# print(r3_spline.evaluate(1*S_TO_NS))
+# print(r3_spline.evaluate(2*S_TO_NS))
 
-r3_spline = RDSpline(0, 5*S_TO_NS, 0.1*S_TO_NS, 2, 5)
-r3_spline.genRandomTrajectory()
+# r3_spline = RDSpline(0, 5*S_TO_NS, 0.1*S_TO_NS, 2, 5)
+# r3_spline.genRandomTrajectory()
 
-print(r3_spline.evaluate(0*S_TO_NS))
-print(r3_spline.evaluate(1*S_TO_NS))
-print(r3_spline.evaluate(2*S_TO_NS))
-print(r3_spline.velocity(2*S_TO_NS))
-print(r3_spline.acceleration(2*S_TO_NS))
+# print(r3_spline.evaluate(0*S_TO_NS))
+# print(r3_spline.evaluate(1*S_TO_NS))
+# print(r3_spline.evaluate(2*S_TO_NS))
+# print(r3_spline.velocity(2*S_TO_NS))
+# print(r3_spline.acceleration(2*S_TO_NS))
 
-print(r3_spline.evaluate(6*S_TO_NS))
+# print(r3_spline.evaluate(6*S_TO_NS))
 
