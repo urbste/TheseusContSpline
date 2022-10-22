@@ -87,37 +87,34 @@ class SplineHelper:
         rd_knots,
         u,
         inv_dt,
-        derivative=0,
+        derivatives=0,
         num_meas=0):
 
         p = computeBaseCoefficientsWithTimeVec(
-            self.N, self.base_coefficients, derivative, u, num_meas)
-        pow_inv_dt = inv_dt ** derivative
+            self.N, self.base_coefficients, derivatives, u, num_meas)
+        pow_inv_dt = inv_dt ** derivatives
 
         coeff = pow_inv_dt * (self.blending_matrix @ p)
 
         scaled = coeff.unsqueeze(-1) * rd_knots
         res = torch.sum(scaled,0)
-        # for i in range(self.N):
-        #     res += coeff[i] * rd_knots[i].tensor
-
         return res
 
     def evaluate_lie_vec(self,
         so3_knots,
         u,
         inv_dt, 
-        derivative,
+        derivatives,
         num_meas=0):
 
         p = computeBaseCoefficientsWithTimeVec(
             self.N, self.base_coefficients, derivative=0, u=u,num_pts=num_meas)
         coeff = self.cumulative_blending_matrix @ p
-        if derivative >= 1:
+        if derivatives >= 1:
             p = computeBaseCoefficientsWithTimeVec(
                 self.N, self.base_coefficients, derivative=1, u=u,num_pts=num_meas)
             dcoeff = inv_dt * (self.cumulative_blending_matrix @ p)
-        if derivative >= 2:
+        if derivatives >= 2:
             p = computeBaseCoefficientsWithTimeVec(
                 self.N, self.base_coefficients, derivative=2, u=u,num_pts=num_meas)
             ddcoeff = inv_dt * inv_dt * (self.cumulative_blending_matrix @ p)
@@ -135,12 +132,12 @@ class SplineHelper:
             exp_kdelta = th.SO3.exp_map(tangent_vector=kdelta)
             transform_out.compose(exp_kdelta)
 
-            if derivative >= 1:
+            if derivatives >= 1:
                 Adj = exp_kdelta.inverse().adjoint()
                 rot_vel = Adj @ rot_vel
                 rot_vel_current = dcoeff[i + 1].unsqueeze(1) * delta 
                 rot_vel = rot_vel + rot_vel_current.unsqueeze(-1)
-            if derivative >= 2:
+            if derivatives >= 2:
                 rot_accel = Adj @ rot_accel
                 accel_lie_bracket = torch.cross(rot_vel.tensor, rot_vel_current.tensor)
                 rot_accel = rot_accel + (ddcoeff[i + 1].unsqueeze(1) * delta + accel_lie_bracket)

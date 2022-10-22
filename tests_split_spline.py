@@ -3,7 +3,7 @@ import theseus as th
 import torch
 from scipy.spatial.transform import Rotation as R
 import numpy as np
-from cost_functions import so3_vel_error, so3_error, r3_error, r3_accl_error
+from cost_functions import accelerometer_error, so3_vel_error, so3_error, r3_error, r3_accl_error
 
 from so3_spline import SO3Spline
 from rd_spline import RDSpline
@@ -93,13 +93,28 @@ for k in range(len(r3_measurements)):
     aux_vars_so3 = [rot_meas, u_so3, inv_dt_so3_s_]
     aux_vars_rot_vel = [rot_vel_meas, u_so3, inv_dt_so3_s_]
 
-    optim_vars_r3, optim_vars_so3 = [], []
+    aux_vars_accelerometer = [r3_accl_meas, u_r3, u_so3, inv_dt_r3_s_, inv_dt_so3_s_]
+
+
+    optim_vars_r3, optim_vars_so3, optim_vars_se3 = [], [], []
 
     for i in range(r3_spline.N):
         optim_vars_r3.append(r3_spline.knots[i + s_r3])
 
     for i in range(so3_spline.N):
         optim_vars_so3.append(so3_spline.knots[i + s_so3])
+
+    for i in range(so3_spline.N):
+        quat = so3_spline.knots[i+s_so3].to_quaternion()
+        pos = r3_spline.knots[i+s_r3].tensor
+        optim_vars_se3.append(th.SE3(x_y_z_quaternion=torch.cat([pos, quat],1)))
+
+    cost_function = th.AutoDiffCostFunction(
+        optim_vars_se3, accelerometer_error, 3, aux_vars=aux_vars_accelerometer, name="accelerometer_cost_"+str(k), 
+        autograd_vectorize=True, autograd_mode=th.AutogradMode.LOOP_BATCH)
+
+    objective.add(cost_function)
+
 
     cost_function = th.AutoDiffCostFunction(
         optim_vars_so3, so3_error, 3, aux_vars=aux_vars_so3, name="so3_cost_"+str(k), 
