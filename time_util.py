@@ -21,7 +21,7 @@ def calc_times(sensor_time_ns, start_time_ns, dt_ns, nr_knots, N):
     if s + N > nr_knots:
         return u, s, False
 
-    u = (st_ns % dt_ns) / dt_ns
+    u = torch.remainder(st_ns,dt_ns) / dt_ns
 
     return u, s, True
 
