@@ -10,7 +10,7 @@ from scipy.spatial.transform import Slerp
 import time
 import torch
 import torch.nn as nn
-
+from spline_helper import SplineHelper
 
 class SplineEstimator3D(nn.Module):
     def __init__(self, N, dt_ns_so3, dt_ns_r3, T_i_c, cam_matrix):
@@ -32,6 +32,8 @@ class SplineEstimator3D(nn.Module):
         self.T_i_c = th.SE3(tensor=T_i_c.float().unsqueeze(0), name="T_i_c")
         self.line_delay = th.Variable(tensor=torch.tensor([0.0]).float().unsqueeze(0), name="line_delay")
         self.cam_matrix = th.Variable(tensor=torch.tensor(cam_matrix).float().unsqueeze(0), name="cam_matrix")
+
+        self.spline_helper = SplineHelper(N)
 
         self.cnt_repro_err = 0
 
@@ -141,10 +143,10 @@ class SplineEstimator3D(nn.Module):
         
         s = aux_vars[0].tensor
         u = aux_vars[1].tensor
-        bearings = aux_vars[0].tensor
-        inv_depths = aux_vars[1].tensor
-        ref_obs = aux_vars[0].tensor
-        ob_obs = aux_vars[1].tensor
+        bearings = aux_vars[2].tensor
+        inv_depths = aux_vars[3].tensor
+        ref_obs = aux_vars[4].tensor
+        ob_obs = aux_vars[5].tensor
         # (obs, N, )
         s_so3_ref = s[0,:,:,0].int()
         s_r3_ref = s[0,:,:,1].int()
@@ -156,11 +158,21 @@ class SplineEstimator3D(nn.Module):
         u_so3_obs = u[0,:,2]
         u_r3_obs = u[0,:,3]
 
+        num_obs = len(inv_depths)
+        knots_se3 = opt_dict["knots"].reshape(sdim, num_fs, 3, 4)
+
+        so3_ref = torch.zeros(self.N, num_obs, 3, 3).float()
+        so3_obs = torch.zeros(self.N, num_obs, 3, 3).float()
+        r3_ref = torch.zeros(self.N, num_obs, 3, 1).float()
+        r3_obs = torch.zeros(self.N, num_obs, 3, 1).float()
+
+        all_R_refs = so3_knots[s_so3_ref.flatten()].rotation().reshape()
+        all_p_refs = r3_knots[s_r3_ref.flatten()].translation().reshape()
+        all_R_obs = so3_knots[s_so3_obs.flatten()].rotation().reshape()
+        all_p_obs = r3_knots[s_r3_obs.flatten()].translation().reshape()
 
 
         num_fs = len(u_r3_ref)
-        knots_se3 = opt_dict["knots"].reshape(sdim, num_fs, 3, 4)
-
 
         y_coord_ref_t_ns = ref_obs[:,:,1] * self.line_delay.squeeze()
         y_coord_obs_t_ns = ob_obs[:,:,1] * self.line_delay.squeeze()
