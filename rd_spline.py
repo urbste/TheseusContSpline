@@ -8,11 +8,11 @@ from time_util import calc_times, S_TO_NS
 
 
 class RDSpline:
-    def __init__(self, start_time_ns, end_time_ns, dt_ns, dim=3, N=4):
+    def __init__(self, start_time_ns, end_time_ns, dt_ns, dim=3, N=4, device="cpu"):
         self.dt_ns = dt_ns
         self.start_time_ns = start_time_ns
         self.end_time_ns = end_time_ns
-
+        self.device = device
         # order of spline
         self.N = N
         # degree of spline
@@ -21,10 +21,10 @@ class RDSpline:
         self.DIM = dim
 
         self.blend_matrix = th.Variable(
-            tensor=torch.tensor(computeBlendingMatrix(self.N, False)), 
+            tensor=torch.tensor(computeBlendingMatrix(self.N, False)).to(self.device), 
             name="blend_matrix")
         self.base_coeffs = th.Variable(
-            tensor=torch.tensor(computeBaseCoefficients(self.N)), 
+            tensor=torch.tensor(computeBaseCoefficients(self.N)).to(self.device), 
             name="base_coeffs")
 
         # vector of knots. should be th.Vector
@@ -33,7 +33,7 @@ class RDSpline:
         self.update_inv_dt()
 
     def update_inv_dt(self):
-        pow_inv_dt = torch.zeros(self.N)
+        pow_inv_dt = torch.zeros(self.N).to(self.device)
 
         pow_inv_dt[0] = 1.0
         pow_inv_dt[1] = S_TO_NS / self.dt_ns
@@ -47,7 +47,7 @@ class RDSpline:
         u, s, suc = calc_times(time_ns, 
             self.start_time_ns, self.dt_ns, 
             len(self.knots), self.N)  
-        res = torch.zeros(1, self.DIM).float()
+        res = torch.zeros(1, self.DIM).float().to(self.device)
 
         if not suc:
             print("WRONG TIME")

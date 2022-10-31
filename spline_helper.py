@@ -8,15 +8,16 @@ from spline_common import computeBaseCoefficientsWithTime
 
 class SplineHelper:
 
-    def __init__(self, N):
+    def __init__(self, N, device="cpu"):
         self.N = N
         self.DEG =self.N - 1
+        self.device = device
         self.blending_matrix = torch.tensor(
-            computeBlendingMatrix(N, cumulative=False))
+            computeBlendingMatrix(N, cumulative=False)).to(self.device)
         self.cumulative_blending_matrix = torch.tensor(
-            computeBlendingMatrix(N, cumulative=True))
+            computeBlendingMatrix(N, cumulative=True)).to(self.device)
         self.base_coefficients = torch.tensor(
-            computeBaseCoefficients(N))
+            computeBaseCoefficients(N)).to(self.device)
     
     def evaluate_lie(self,
         so3_knots,
@@ -38,7 +39,7 @@ class SplineHelper:
 
         transform_out = self.so3_knots[0]
 
-        rot_vel, rot_accel = th.Vector(3), th.Vector3
+        rot_vel, rot_accel = th.Vector(3), th.Vector(3)
 
         for i in range(0, self.DEG):
             p0 = th.SO3(so3_knots[i])
@@ -121,7 +122,7 @@ class SplineHelper:
 
         transform_out = th.SO3(tensor=so3_knots[0])
 
-        rot_vel, rot_accel = torch.zeros(num_meas, 3, 1), torch.zeros(num_meas, 3, 1)
+        rot_vel, rot_accel = torch.zeros(num_meas, 3, 1).to(self.device), torch.zeros(num_meas, 3, 1).to(self.device)
 
         for i in range(0, self.DEG):
             p0 = th.SO3(tensor=so3_knots[i])
