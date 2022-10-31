@@ -19,8 +19,8 @@ class SplineEstimator3D(nn.Module):
         self.N = N
         self.device = "cpu" # "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.so3_spline = SO3Spline(0, 0, dt_ns=dt_ns_so3, N=N)
-        self.r3_spline = RDSpline(0, 0, dt_ns=dt_ns_r3, dim=3, N=N)
+        self.so3_spline = SO3Spline(0, 0, dt_ns=dt_ns_so3, N=N, device=self.device)
+        self.r3_spline = RDSpline(0, 0, dt_ns=dt_ns_r3, dim=3, N=N, device=self.device)
 
         # init some variable
         self.dt_ns_so3 = th.Variable(
@@ -147,6 +147,8 @@ class SplineEstimator3D(nn.Module):
 
         for i in range(len(self.so3_spline.knots)):
             self.optim_vars.append(self.so3_spline.knots[i])
+            knot = self.so3_spline.knots[i]
+            self.theseus_inputs[knot.name] = self.so3_spline.knots[i].tensor
 
     def _calc_time_so3(self, sensor_time_ns):
         return time_util.calc_times(
@@ -315,7 +317,7 @@ class SplineEstimator3D(nn.Module):
                 #cost_weight=ScaleCostWeight(1), 
                 name="rs_repro_cost_"+str_cnt, 
                 autograd_vectorize=True, 
-                autograd_mode=th.AutogradMode.DENSE,
+                autograd_mode=th.AutogradMode.LOOP_BATCH,
                 autograd_strict=False)
 
             #robust_cost_function = th.RobustCostFunction(
@@ -348,7 +350,7 @@ class SplineEstimator3D(nn.Module):
         return sol["x"]
 
 import pytheia as pt
-recon = pt.io.ReadReconstruction("/media/Data/Sparsenet/Ammerbach/Links/spline_recon_run1.recon")[1]
+recon = pt.io.ReadReconstruction("spline_recon_run1.recon")[1]
 
 cam_matrix = recon.View(0).Camera().GetCalibrationMatrix()
 
@@ -356,10 +358,10 @@ est = SplineEstimator3D(4, 0.1*time_util.S_TO_NS,
     0.1*time_util.S_TO_NS, torch.eye(3,4).float(), cam_matrix)
 est.init_spline_with_vision(recon)
 
-for v in sorted(recon.ViewIds):
+for v in sorted(recon.ViewIds)[2:]:
     est.add_rs_view(recon.View(v),  v, recon)
-    print("added ",v)
-    if v > 4:
+    print("added view: ",v)
+    if v > 10:
         break
 
 est.init_optimizer()
