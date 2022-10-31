@@ -22,6 +22,9 @@ class SplineEstimator3D(nn.Module):
         self.so3_spline = SO3Spline(0, 0, dt_ns=dt_ns_so3, N=N, device=self.device)
         self.r3_spline = RDSpline(0, 0, dt_ns=dt_ns_r3, dim=3, N=N, device=self.device)
 
+        self.r3_knots_in_problem = []
+        self.so3_knots_in_problem = []
+
         # init some variable
         self.dt_ns_so3 = th.Variable(
             tensor=torch.tensor(dt_ns_so3).float().unsqueeze(0).to(self.device), 
@@ -141,14 +144,11 @@ class SplineEstimator3D(nn.Module):
         self.optim_vars = []
         for i in range(len(self.r3_spline.knots)):
             self.optim_vars.append(self.r3_spline.knots[i])
-
-            knot = self.r3_spline.knots[i]
-            self.theseus_inputs[knot.name] = self.r3_spline.knots[i].tensor
-
+            self.r3_knots_in_problem.append(False)
+            
         for i in range(len(self.so3_spline.knots)):
             self.optim_vars.append(self.so3_spline.knots[i])
-            knot = self.so3_spline.knots[i]
-            self.theseus_inputs[knot.name] = self.so3_spline.knots[i].tensor
+            self.so3_knots_in_problem.append(False)
 
     def _calc_time_so3(self, sensor_time_ns):
         return time_util.calc_times(
@@ -279,12 +279,18 @@ class SplineEstimator3D(nn.Module):
                 if not suc:
                     print("time calc failed")
                     continue
-
+                
+                # This is super ugly. Todo: make that nicer
                 for i in range(self.so3_spline.N):
                     knot_ids[0,idx,i,0] = s_so3_ref + i
                     knot_ids[0,idx,i,1] = s_r3_ref + i
                     knot_ids[0,idx,i,2] = s_so3_obs + i
                     knot_ids[0,idx,i,3] = s_r3_obs + i
+                    self.r3_knots_in_problem[s_so3_ref + i] = True
+                    self.so3_knots_in_problem[s_r3_ref + i] = True
+                    self.r3_knots_in_problem[s_so3_obs + i] = True
+                    self.so3_knots_in_problem[s_r3_obs + i] = True
+
                 knot_us[0,idx,0] = u_so3_ref
                 knot_us[0,idx,1] = u_r3_ref
                 knot_us[0,idx,2] = u_so3_obs
@@ -340,6 +346,15 @@ class SplineEstimator3D(nn.Module):
         self.spline_optimizer_layer.to(self.device)
     # Run theseus so that NN(x*) is close to y
     def forward(self):
+
+        # get inputs
+        for idx, knot in enumerate(self.r3_spline.knots):
+            if self.r3_knots_in_problem[idx]:
+                self.theseus_inputs[knot.name] = knot
+        for idx, knot in enumerate(self.so3_spline.knots):
+            if self.so3_knots_in_problem[idx]:
+                self.theseus_inputs[knot.name] = knot
+
         sol, info = self.spline_optimizer_layer.forward(
             self.theseus_inputs, optimizer_kwargs={
                 "damping": 0.1, 
@@ -361,7 +376,7 @@ est.init_spline_with_vision(recon)
 for v in sorted(recon.ViewIds)[2:]:
     est.add_rs_view(recon.View(v),  v, recon)
     print("added view: ",v)
-    if v > 10:
+    if v > 50:
         break
 
 est.init_optimizer()
