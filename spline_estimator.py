@@ -14,6 +14,7 @@ from spline_helper import SplineHelper
 
 class SplineEstimator3D(nn.Module):
     def __init__(self, N, dt_ns_so3, dt_ns_r3, T_i_c, cam_matrix):
+        super().__init__()
         self.N = N
         self.so3_spline = SO3Spline(0, 0, dt_ns=dt_ns_so3, N=N)
         self.r3_spline = RDSpline(0, 0, dt_ns=dt_ns_r3, dim=3, N=N)
@@ -28,13 +29,14 @@ class SplineEstimator3D(nn.Module):
         self.gravity = th.Variable(torch.tensor([0., 0., -9.81]).float(), name="gravity")
 
         self.objective = th.Objective()
+        self.theseus_inputs = {}
 
         self.T_i_c = th.SE3(tensor=T_i_c.float().unsqueeze(0), name="T_i_c")
         self.line_delay = th.Variable(tensor=torch.tensor([0.0]).float().unsqueeze(0), name="line_delay")
         self.cam_matrix = th.Variable(tensor=torch.tensor(cam_matrix).float().unsqueeze(0), name="cam_matrix")
 
         self.spline_helper = SplineHelper(N)
-
+        
         self.cnt_repro_err = 0
 
     def reinit_spline_with_times(self, start_ns, end_ns):
@@ -143,89 +145,82 @@ class SplineEstimator3D(nn.Module):
         
         s = aux_vars[0].tensor
         u = aux_vars[1].tensor
-        bearings = aux_vars[2].tensor
-        inv_depths = aux_vars[3].tensor
-        ref_obs = aux_vars[4].tensor
-        ob_obs = aux_vars[5].tensor
+        bearings = aux_vars[2].tensor[0]
+        inv_depths = aux_vars[3].tensor[0]
+        ref_obs = aux_vars[4].tensor[0]
+        obs_obs = aux_vars[5].tensor[0]
         # (obs, N, )
         s_so3_ref = s[0,:,:,0].int()
         s_r3_ref = s[0,:,:,1].int()
         s_so3_obs = s[0,:,:,2].int()
         s_r3_obs = s[0,:,:,3].int()
+        num_obs = s_so3_ref.shape[0]
 
         u_so3_ref = u[0,:,0]
         u_r3_ref = u[0,:,1]
         u_so3_obs = u[0,:,2]
         u_r3_obs = u[0,:,3]
 
-        num_obs = len(inv_depths)
-        knots_se3 = opt_dict["knots"].reshape(sdim, num_fs, 3, 4)
+        # num_obs = len(inv_depths)
+        # knots_se3 = opt_dict["knots"].reshape(sdim, num_fs, 3, 4)
 
-        so3_ref = torch.zeros(self.N, num_obs, 3, 3).float()
-        so3_obs = torch.zeros(self.N, num_obs, 3, 3).float()
-        r3_ref = torch.zeros(self.N, num_obs, 3, 1).float()
-        r3_obs = torch.zeros(self.N, num_obs, 3, 1).float()
+        all_R_refs = torch.cat([so3_knots[idx].tensor[0] for idx in s_so3_ref.flatten()],0).reshape(self.N,num_obs,3,3)
+        all_p_refs = torch.cat([r3_knots[idx].tensor[0] for idx in s_r3_ref.flatten()],0).reshape(self.N,num_obs,3) 
+        all_R_obs = torch.cat([so3_knots[idx].tensor[0] for idx in s_so3_obs.flatten()],0).reshape(self.N,num_obs,3,3) 
+        all_p_obs = torch.cat([r3_knots[idx].tensor[0] for idx in s_r3_obs.flatten()],0).reshape(self.N,num_obs,3) 
 
-        all_R_refs = so3_knots[s_so3_ref.flatten()].rotation().reshape()
-        all_p_refs = r3_knots[s_r3_ref.flatten()].translation().reshape()
-        all_R_obs = so3_knots[s_so3_obs.flatten()].rotation().reshape()
-        all_p_obs = r3_knots[s_r3_obs.flatten()].translation().reshape()
+        y_coord_ref_t_ns = ref_obs[:,1] * self.line_delay.tensor[0]
+        y_coord_obs_t_ns = obs_obs[:,1] * self.line_delay.tensor[0]
 
+        u_ld_ref_so3 = y_coord_ref_t_ns * self.inv_dt_so3.tensor[0] + u_so3_ref
+        u_ld_ref_r3 = y_coord_ref_t_ns * self.inv_dt_r3.tensor[0] + u_r3_ref
 
-        num_fs = len(u_r3_ref)
-
-        y_coord_ref_t_ns = ref_obs[:,:,1] * self.line_delay.squeeze()
-        y_coord_obs_t_ns = ob_obs[:,:,1] * self.line_delay.squeeze()
-
-        u_ld_ref_so3 = y_coord_ref_t_ns * self.inv_dt_so3 + u_so3_ref.squeeze()
-        u_ld_ref_r3 = y_coord_ref_t_ns * self.inv_dt_r3 + u_r3_ref.squeeze()
-
-        u_ld_obs_so3 = y_coord_obs_t_ns * self.inv_dt_so3 + u_so3_obs.squeeze()
-        u_ld_obs_r3 = y_coord_obs_t_ns * self.inv_dt_r3 + u_r3_obs.squeeze()
+        u_ld_obs_so3 = y_coord_obs_t_ns * self.inv_dt_so3.tensor[0] + u_so3_obs
+        u_ld_obs_r3 = y_coord_obs_t_ns * self.inv_dt_r3.tensor[0] + u_r3_obs
 
         # evalute reference rolling shutter pose
         R_w_i_ref = self.spline_helper.evaluate_lie_vec(
-            knots_se3[:4,:,:3,:3], u_ld_ref_so3, 
-            self.inv_dt_so3 , derivatives=0, num_meas=num_fs)[0]
+            all_R_refs, u_ld_ref_so3, 
+            self.inv_dt_so3.tensor, derivatives=0, num_meas=num_obs)[0]
 
         t_w_i_ref = self.spline_helper.evaluate_euclidean_vec(
-            knots_se3[:4,:,:3,3], u_ld_ref_r3, 
-            self.inv_dt_r3, derivatives=0, num_meas=num_fs)
+            all_p_refs, u_ld_ref_r3, 
+            self.inv_dt_r3.tensor, derivatives=0, num_meas=num_obs)
 
         R_w_i_obs = self.spline_helper.evaluate_lie_vec(
-            knots_se3[4:,:,:3,:3], u_ld_obs_so3, 
-            self.inv_dt_so3 , derivatives=0, num_meas=num_fs)[0]
+            all_R_obs, u_ld_obs_so3, 
+            self.inv_dt_so3.tensor, derivatives=0, num_meas=num_obs)[0]
 
         t_w_i_obs = self.spline_helper.evaluate_euclidean_vec(
-            knots_se3[4:,:,:3,3], u_ld_obs_r3, 
-            self.inv_dt_r3, derivatives=0, num_meas=num_fs)
+            all_p_obs, u_ld_obs_r3, 
+            self.inv_dt_r3.tensor, derivatives=0, num_meas=num_obs)
 
         # project point to camera
         depths = 1. / inv_depths
-        bearings_scaled = depths.unsqueeze(-1) * bearings
+        bearings_scaled = depths * bearings
 
         T_i_c = th.SE3(tensor=self.T_i_c)
+        T_c_i = T_i_c.inverse()
         # 1. convert point from bearing vector to 3d point using
         # inverse depth from reference view and transform from camera to IMU
         # reference frame
-        X_ref = T_i_c.transform_to(bearings_scaled)
+        X_ref = T_i_c.transform_to(bearings_scaled.squeeze(0))
         # 2. Transform point from IMU to world frame
         X = R_w_i_ref.rotate(X_ref) + th.Point3(tensor=t_w_i_ref)
         # 3. Transform point from world to IMU reference frame at observation   Vector3 X = R_ref_w_i * X_ref + t_ref_w_i;
         X_obs = R_w_i_obs.inverse().rotate(X - th.Point3(t_w_i_obs))
         # 4. Transform point from IMU reference frame to camera frame
-        X_camera = T_i_c.inverse().transform_to(X_obs)
+        X_camera = T_c_i.transform_to(X_obs)
 
-        x_camera = self.cam_matrix @ X_camera.tensor.unsqueeze(-1)
+        x_camera = self.cam_matrix.tensor @ X_camera.tensor.unsqueeze(-1)
 
-        return x_camera[:,:2,0] / x_camera[:,2] - obs_obs
+        return (x_camera[:,:2,0] / x_camera[:,2] - obs_obs).flatten().unsqueeze(0)
 
     def add_rs_view(self, view, recon):
         
         # iterate observations of that view
         tracks = view.TrackIds()
 
-        opt_vars = []
         aux_vars = []
         str_cnt = view.Name()
 
@@ -258,7 +253,6 @@ class SplineEstimator3D(nn.Module):
                 print("time calc failed")
                 continue
 
-            optim_vars = []
             for i in range(self.so3_spline.N):
                 knot_ids[0,idx,i,0] = s_so3_ref + i
                 knot_ids[0,idx,i,1] = s_r3_ref + i
@@ -279,9 +273,9 @@ class SplineEstimator3D(nn.Module):
             th.Variable(tensor=knot_ids.float(), name="knot_ids_"+str_cnt),
             th.Variable(tensor=knot_us.float(), name="knot_us_"+str_cnt),
             th.Variable(tensor=bearings.float(), name="bearings_"+str_cnt),
-            th.Variable(tensor=inv_depths.float(), name="bearings_"+str_cnt),
-            th.Variable(tensor=ref_obs.float(), name="bearings_"+str_cnt),
-            th.Variable(tensor=obs_obs.float(), name="bearings_"+str_cnt),
+            th.Variable(tensor=inv_depths.float(), name="inv_depths_"+str_cnt),
+            th.Variable(tensor=ref_obs.float(), name="ref_obs_"+str_cnt),
+            th.Variable(tensor=obs_obs.float(), name="obs_obs_"+str_cnt),
         ]
 
         cost_function = th.AutoDiffCostFunction(
@@ -291,15 +285,13 @@ class SplineEstimator3D(nn.Module):
             aux_vars=aux_vars, 
             name="rs_repro_cost_"+str_cnt, 
             autograd_vectorize=False, 
-            autograd_mode=th.AutogradMode.LOOP_BATCH)
+            autograd_mode=th.AutogradMode.DENSE)
 
         self.objective.add(cost_function)
 
         self.cnt_repro_err += 1
 
     def init_optimizer(self):
-
-        self.theseus_inputs = {}
         self.spline_optimizer = th.LevenbergMarquardt(
             self.objective,
             max_iterations=15,
@@ -308,10 +300,9 @@ class SplineEstimator3D(nn.Module):
         self.spline_optimizer_layer = th.TheseusLayer(self.spline_optimizer)
 
     # Run theseus so that NN(x*) is close to y
-    def forward(self, y):
-        x0 = torch.ones(y.shape[0], 2)
-        sol, info = self.layer.forward(
-            {"x": x0, "y": y}, optimizer_kwargs={"damping": 0.1}
+    def forward(self):
+        sol, info = self.spline_optimizer_layer.forward(
+            self.theseus_inputs, optimizer_kwargs={"damping": 0.1}
         )
         print("Optim error: ", info.last_err.item())
         return sol["x"]
@@ -331,5 +322,5 @@ for v in sorted(recon.ViewIds)[2:]:
     if v > 5:
         break
 
-
-est.optimize()
+est.init_optimizer()
+est.forward()
