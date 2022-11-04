@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 from spline_helper import SplineHelper
 import time_util
+import time
 
 class SplineEstimator3D(nn.Module):
     def __init__(self, N, dt_ns_so3, dt_ns_r3, T_i_c, cam_matrix):
@@ -168,6 +169,8 @@ class SplineEstimator3D(nn.Module):
 
     def _rs_error(self, optim_vars, aux_vars):
 
+        start = time.time()
+        
         so3_knots = optim_vars[:len(optim_vars)//2]
         r3_knots = optim_vars[len(optim_vars)//2:]
         
@@ -239,8 +242,10 @@ class SplineEstimator3D(nn.Module):
         x_camera = self.cam_matrix.tensor @ X_camera.tensor.unsqueeze(-1)
 
         repro_error = x_camera[:,:2,0] / x_camera[:,2] - obs_obs
-        print("Mean reprojection error: ",torch.mean(repro_error))
+        print("Mean reprojection error: {:.3f}".format(torch.mean(repro_error)))
         print("Number of residuals: ",repro_error.shape[0])
+        print("Time to eval residuals: {:.3f}s".format(time.time()-start))
+
         return x_camera[:,:2,0] / x_camera[:,2] - obs_obs
 
     def add_rs_view(self, view, view_id, recon):
@@ -351,7 +356,7 @@ class SplineEstimator3D(nn.Module):
                 2, 
                 aux_vars=aux_vars,
                 name="rs_repro_cost_"+str(view_id)+"_"+str(t_idx_loop), 
-                autograd_vectorize=True, 
+                autograd_vectorize=False, 
                 autograd_mode=th.AutogradMode.DENSE,
                 autograd_strict=False)
 
