@@ -181,10 +181,10 @@ class SplineEstimator3D(nn.Module):
         ref_obs = aux_vars[4].tensor
         obs_obs = aux_vars[5].tensor
         # (obs, N, )
-        s_so3_ref =  indices[:,:,0].int()
-        s_so3_obs = indices[:,:,1].int()
-        s_r3_ref = indices[:,:,2].int()
-        s_r3_obs = indices[:,:,3].int()
+        s_so3_ref =  indices[:,:,0].int().flatten()
+        s_so3_obs = indices[:,:,1].int().flatten()
+        s_r3_ref = indices[:,:,2].int().flatten()
+        s_r3_obs = indices[:,:,3].int().flatten()
         num_obs = indices.shape[0]
 
         u_so3_ref = u[:,0]
@@ -194,10 +194,10 @@ class SplineEstimator3D(nn.Module):
 
         # num_obs = len(inv_depths)
         # knots_se3 = opt_dict["knots"].reshape(sdim, num_fs, 3, 4)
-        all_R_refs = torch.cat([so3_knots[idx].tensor[0] for idx in s_so3_ref.flatten()],0).reshape(self.N,num_obs,3,3)
-        all_p_refs = torch.cat([r3_knots[idx].tensor[0] for idx in s_r3_ref.flatten()],0).reshape(self.N,num_obs,3) 
-        all_R_obs = torch.cat([so3_knots[idx].tensor[0] for idx in s_so3_obs.flatten()],0).reshape(self.N,num_obs,3,3) 
-        all_p_obs = torch.cat([r3_knots[idx].tensor[0] for idx in s_r3_obs.flatten()],0).reshape(self.N,num_obs,3) 
+        all_R_refs = torch.cat([so3_knots[idx].tensor[0] for idx in s_so3_ref],0).reshape(self.N,num_obs,3,3)
+        all_p_refs = torch.cat([r3_knots[idx].tensor[0] for idx in s_r3_ref],0).reshape(self.N,num_obs,3) 
+        all_R_obs = torch.cat([so3_knots[idx].tensor[0] for idx in s_so3_obs],0).reshape(self.N,num_obs,3,3) 
+        all_p_obs = torch.cat([r3_knots[idx].tensor[0] for idx in s_r3_obs],0).reshape(self.N,num_obs,3) 
 
         y_coord_ref_t_ns = ref_obs[:,1] * self.line_delay.tensor[0]
         y_coord_obs_t_ns = obs_obs[:,1] * self.line_delay.tensor[0]
