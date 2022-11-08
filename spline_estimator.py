@@ -228,7 +228,7 @@ class SplineEstimator3D(nn.Module):
         # 1. convert point from bearing vector to 3d point using
         # inverse depth from reference view and transform from camera to IMU
         # reference frame
-        X_ref = self.T_i_c.transform_to(bearings_scaled.squeeze(0))
+        X_ref = self.T_i_c.transform_to(bearings_scaled)
         # 2. Transform point from IMU to world frame
         X = R_w_i_ref.rotate(X_ref) + th.Point3(tensor=t_w_i_ref)
         # 3. Transform point from world to IMU reference frame at observation   Vector3 X = R_ref_w_i * X_ref + t_ref_w_i;

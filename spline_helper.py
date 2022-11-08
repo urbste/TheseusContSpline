@@ -4,7 +4,7 @@ from spline_common import computeBaseCoefficients, computeBaseCoefficientsWithTi
 from spline_common import computeBlendingMatrix
 from spline_common import computeBaseCoefficientsWithTime
 
-
+import time
 
 class SplineHelper:
 
@@ -131,7 +131,8 @@ class SplineHelper:
             delta = r01.log_map()
             kdelta = coeff[i+1].unsqueeze(1) * delta
             exp_kdelta = th.SO3.exp_map(tangent_vector=kdelta)
-            transform_out.compose(exp_kdelta)
+
+            transform_out = transform_out.compose(exp_kdelta)
 
             if derivatives >= 1:
                 Adj = exp_kdelta.inverse().adjoint()
@@ -142,5 +143,4 @@ class SplineHelper:
                 rot_accel = Adj @ rot_accel
                 accel_lie_bracket = torch.cross(rot_vel.tensor, rot_vel_current.tensor)
                 rot_accel = rot_accel + (ddcoeff[i + 1].unsqueeze(1) * delta + accel_lie_bracket)
-
         return transform_out, rot_vel, rot_accel
