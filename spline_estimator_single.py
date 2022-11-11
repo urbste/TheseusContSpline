@@ -56,7 +56,7 @@ class SplineEstimator3D(nn.Module):
         self.T_c_i = self.T_i_c.inverse()
 
         self.line_delay = th.Variable(
-            tensor=torch.tensor([1/540*1/50]).float().unsqueeze(0).to(self.device), 
+            tensor=torch.tensor([1/480*1/50]).float().unsqueeze(0).to(self.device), 
             name="line_delay")
         self.cam_matrix = th.Variable(
             tensor=torch.tensor(cam_matrix).float().unsqueeze(0).to(self.device), 
@@ -229,7 +229,7 @@ class SplineEstimator3D(nn.Module):
                 self.inv_dt_r3.tensor, derivatives=0, num_meas=num_obs)
 
         with profiler.record_function("transform_points"):
-        # project point to camera
+            # project point to camera
             depths = 1. / inv_depths
             bearings_scaled = depths * bearings
 
@@ -249,8 +249,9 @@ class SplineEstimator3D(nn.Module):
             repro_error = x_camera[:,:2,0] / x_camera[:,2] - obs_obs
         # print("Mean reprojection error: {:.3f}".format(torch.mean(repro_error)))
         # print("Number of residuals: ",repro_error.shape[0])
-        # print("Time to eval residuals: {:.3f}s".format(time.time()-start))
+        # print("Time to evaluate residuals: {:.3f}s".format(time.time()-start))
 
+        # return size num_obs x 2
         return repro_error
 
     def add_rs_view(self, view, view_id, recon):
@@ -289,7 +290,7 @@ class SplineEstimator3D(nn.Module):
                 continue
         
             knot_ids = torch.zeros((1,self.N,4)).int()
-            knot_us = torch.zeros((1,4)).int()
+            knot_us = torch.zeros((1,4)).float()
             bearings = torch.zeros((1,3)).float()
             inv_depths = torch.zeros((1,1)).float()
             ref_obs = torch.zeros((1,2)).float()
@@ -332,10 +333,7 @@ class SplineEstimator3D(nn.Module):
             optim_vars.extend([self.r3_spline.knots[idx] for idx in knots_in_cost_ids_r3])
             
             # get local indices of knots
-            knot_us[0,0] = u_so3_ref
-            knot_us[0,1] = u_r3_ref
-            knot_us[0,2] = u_so3_obs
-            knot_us[0,3] = u_r3_obs
+            knot_us[0,:] = torch.tensor([u_so3_ref, u_r3_ref, u_so3_obs, u_r3_obs])
 
             bearings[0,:] = torch.tensor(
                 recon.Track(t_id).ReferenceBearingVector()).float().unsqueeze(0).to(self.device)
@@ -363,7 +361,7 @@ class SplineEstimator3D(nn.Module):
                 aux_vars=aux_vars,
                 name="rs_repro_cost_"+str(view_id)+"_"+str(t_idx_loop), 
                 autograd_vectorize=False, 
-                autograd_mode=th.AutogradMode.DENSE,
+                autograd_mode=th.AutogradMode.LOOP_BATCH,
                 autograd_strict=True)
 
             # robust_cost_function = th.RobustCostFunction(
@@ -412,15 +410,18 @@ recon = pt.io.ReadReconstruction("spline_recon_run1.recon")[1]
 
 cam_matrix = recon.View(0).Camera().GetCalibrationMatrix()
 
-T_i_c = torch.eye(3,4).float()
+T_i_c = th.SE3(x_y_z_quaternion=torch.tensor([[
+    0.013991958832708196,-0.040766470166917895,0.01589418686420154,
+    0.0017841953862121206,-0.0014240956361964555,-0.7055056377782172,0.7087006304932949]]).float()).tensor.squeeze()
+
 est = SplineEstimator3D(4, 0.1*time_util.S_TO_NS, 
     0.1*time_util.S_TO_NS, T_i_c, cam_matrix)
 est.init_spline_with_vision(recon)
 
-for v in sorted(recon.ViewIds)[1:]:
+for v in sorted(recon.ViewIds)[3:]:
     est.add_rs_view(recon.View(v),  v, recon)
     print("added view: ",v)
-    if v > 6:
+    if v > 4:
         break
 
 est.init_optimizer()
