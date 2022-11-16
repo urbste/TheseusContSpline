@@ -16,11 +16,97 @@ import time
 import torch.autograd.profiler as profiler
 
 
+class RSError:
+    def __init__(self, knot_start_ids):
+
+        self.so3_knot_idx_ref, self.so3_knot_idx_obs = knot_start_ids[:,0], knot_start_ids[:,1]
+        self.r3_knot_idx_ref, self.r3_knot_idx_obs = knot_start_ids[:,2], knot_start_ids[:,3]
+
+        self.bearing = bearing
+        self.ref_obs, self.obs_obs  = observatons[0], observatons[1]
+        self.inv_depth = inv_depth
+        self.norm_time = u
+        self.line_delay = ld
+        self.inv_dt_so3, self.inv_dt_r3 = inv_dts[0], inv_dts[1]
+        self.spline_helper = SplineHelper(4, "cpu")
+        self.T_i_c = T_i_c 
+        self.T_c_i = T_i_c.inverse()
+        self.cam_matrix = cam_matrix
+
+    def __call__(self, optim_vars, aux_vars):
+        so3_knots_ = optim_vars[: len(optim_vars) // 2]  # each (B, 3, 3)
+        r3_knots_ = optim_vars[len(optim_vars) // 2 :]   # each (B, 3)
+        
+        # Shapes will be (4, B, 3, 3) and (4, B, 3)
+        so3_knots_tensor_ref_ = torch.stack(
+            [so3_knots_[i].tensor for i in self.so3_knot_idx_ref], dim=0)
+        so3_knots_tensor_obs_ = torch.stack(
+            [so3_knots_[i].tensor for i in self.so3_knot_idx_obs], dim=0)
+
+        r3_knots_tensor_ref_ = torch.stack(
+            [r3_knots_[i].tensor for i in self.r3_knot_idx_ref], dim=0)
+        r3_knots_tensor_obs_ = torch.stack(
+            [r3_knots_[i].tensor for i in self.r3_knot_idx_obs], dim=0)
+
+        u_so3_ref = self.norm_time[0]
+        u_r3_ref = self.norm_time[1]
+        u_so3_obs = self.norm_time[2]
+        u_r3_obs = self.norm_time[3]
+
+        y_coord_ref_t_ns = self.ref_obs[:,1] * self.line_delay.tensor[0]
+        y_coord_obs_t_ns = self.obs_obs[:,1] * self.line_delay.tensor[0]
+
+        u_ld_ref_so3 = y_coord_ref_t_ns * self.inv_dt_so3.tensor[0] + u_so3_ref
+        u_ld_ref_r3 = y_coord_ref_t_ns * self.inv_dt_r3.tensor[0] + u_r3_ref
+
+        u_ld_obs_so3 = y_coord_obs_t_ns * self.inv_dt_so3.tensor[0] + u_so3_obs
+        u_ld_obs_r3 = y_coord_obs_t_ns * self.inv_dt_r3.tensor[0] + u_r3_obs
+
+        num_obs = self.ref_obs.shape[0]
+        # evalute reference rolling shutter pose
+        R_w_i_ref = self.spline_helper.evaluate_lie_vec(
+            so3_knots_tensor_ref_, u_ld_ref_so3, 
+            self.inv_dt_so3.tensor, derivatives=0, num_meas=num_obs)[0]
+
+        t_w_i_ref = self.spline_helper.evaluate_euclidean_vec(
+            r3_knots_tensor_ref_, u_ld_ref_r3, 
+            self.inv_dt_r3.tensor, derivatives=0, num_meas=num_obs)
+
+        R_w_i_obs = self.spline_helper.evaluate_lie_vec(
+            so3_knots_tensor_obs_, u_ld_obs_so3, 
+            self.inv_dt_so3.tensor, derivatives=0, num_meas=num_obs)[0]
+
+        t_w_i_obs = self.spline_helper.evaluate_euclidean_vec(
+            r3_knots_tensor_obs_, u_ld_obs_r3, 
+            self.inv_dt_r3.tensor, derivatives=0, num_meas=num_obs)
+
+        # project point to camera
+        depths = 1. / self.inv_depth
+        bearings_scaled = depths * self.bearing
+
+        # 1. convert point from bearing vector to 3d point using
+        # inverse depth from reference view and transform from camera to IMU
+        # reference frame
+        X_ref = self.T_i_c.transform_to(bearings_scaled)
+        # 2. Transform point from IMU to world frame
+        X = R_w_i_ref.rotate(X_ref) + th.Point3(tensor=t_w_i_ref)
+        # 3. Transform point from world to IMU reference frame at observation   Vector3 X = R_ref_w_i * X_ref + t_ref_w_i;
+        X_obs = R_w_i_obs.inverse().rotate(X - th.Point3(t_w_i_obs))
+        # 4. Transform point from IMU reference frame to camera frame
+        X_camera = self.T_c_i.transform_to(X_obs)
+
+        x_camera = self.cam_matrix.tensor @ X_camera.tensor.unsqueeze(-1)
+
+        repro_error = x_camera[:,:2,0] / x_camera[:,2] - self.obs_obs
+
+        return repro_error
+    
+
 class SplineEstimator3D(nn.Module):
-    def __init__(self, N, dt_ns_so3, dt_ns_r3, T_i_c, cam_matrix):
+    def __init__(self, N, dt_ns_so3, dt_ns_r3, T_i_c, cam_matrix, device):
         super().__init__()
         self.N = N
-        self.device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device 
 
         self.so3_spline = SO3Spline(0, 0, dt_ns=dt_ns_so3, N=N, device=self.device)
         self.r3_spline = RDSpline(0, 0, dt_ns=dt_ns_r3, dim=3, N=N, device=self.device)
@@ -169,98 +255,12 @@ class SplineEstimator3D(nn.Module):
             len(self.r3_spline.knots),
             self.N)
 
-    def _rs_error(self, optim_vars, aux_vars):
 
-        start = time.time()
-        
-        with profiler.record_function("unpack_variables"):
-            so3_knots = optim_vars[:len(optim_vars)//2]
-            r3_knots = optim_vars[len(optim_vars)//2:]
-            
-            indices = aux_vars[0].tensor
-            u = aux_vars[1].tensor
-            bearings = aux_vars[2].tensor
-            inv_depths = aux_vars[3].tensor
-            ref_obs = aux_vars[4].tensor
-            obs_obs = aux_vars[5].tensor
-            # (obs, N, )
-            s_so3_ref =  indices[:,:,0].int().flatten()
-            s_so3_obs = indices[:,:,1].int().flatten()
-            s_r3_ref = indices[:,:,2].int().flatten()
-            s_r3_obs = indices[:,:,3].int().flatten()
-            num_obs = indices.shape[0]
-
-            u_so3_ref = u[:,0]
-            u_r3_ref = u[:,1]
-            u_so3_obs = u[:,2]
-            u_r3_obs = u[:,3]
-
-            # num_obs = len(inv_depths)
-            # knots_se3 = opt_dict["knots"].reshape(sdim, num_fs, 3, 4)
-            all_R_refs = torch.cat([so3_knots[idx].tensor[0] for idx in s_so3_ref],0).reshape(num_obs,self.N,3,3).transpose(1,0)
-            all_p_refs = torch.cat([r3_knots[idx].tensor[0] for idx in s_r3_ref],0).reshape(num_obs,self.N,3).transpose(1,0)
-            all_R_obs = torch.cat([so3_knots[idx].tensor[0] for idx in s_so3_obs],0).reshape(num_obs,self.N,3,3).transpose(1,0)
-            all_p_obs = torch.cat([r3_knots[idx].tensor[0] for idx in s_r3_obs],0).reshape(num_obs,self.N,3).transpose(1,0) 
-
-        with profiler.record_function("evaluate_splines"):
-            y_coord_ref_t_ns = ref_obs[:,1] * self.line_delay.tensor[0]
-            y_coord_obs_t_ns = obs_obs[:,1] * self.line_delay.tensor[0]
-
-            u_ld_ref_so3 = y_coord_ref_t_ns * self.inv_dt_so3.tensor[0] + u_so3_ref
-            u_ld_ref_r3 = y_coord_ref_t_ns * self.inv_dt_r3.tensor[0] + u_r3_ref
-
-            u_ld_obs_so3 = y_coord_obs_t_ns * self.inv_dt_so3.tensor[0] + u_so3_obs
-            u_ld_obs_r3 = y_coord_obs_t_ns * self.inv_dt_r3.tensor[0] + u_r3_obs
-            # evalute reference rolling shutter pose
-            R_w_i_ref = self.spline_helper.evaluate_lie_vec(
-                all_R_refs, u_ld_ref_so3, 
-                self.inv_dt_so3.tensor, derivatives=0, num_meas=num_obs)[0]
-
-            t_w_i_ref = self.spline_helper.evaluate_euclidean_vec(
-                all_p_refs, u_ld_ref_r3, 
-                self.inv_dt_r3.tensor, derivatives=0, num_meas=num_obs)
-
-            R_w_i_obs = self.spline_helper.evaluate_lie_vec(
-                all_R_obs, u_ld_obs_so3, 
-                self.inv_dt_so3.tensor, derivatives=0, num_meas=num_obs)[0]
-
-            t_w_i_obs = self.spline_helper.evaluate_euclidean_vec(
-                all_p_obs, u_ld_obs_r3, 
-                self.inv_dt_r3.tensor, derivatives=0, num_meas=num_obs)
-
-        with profiler.record_function("transform_points"):
-            # project point to camera
-            depths = 1. / inv_depths
-            bearings_scaled = depths * bearings
-
-            # 1. convert point from bearing vector to 3d point using
-            # inverse depth from reference view and transform from camera to IMU
-            # reference frame
-            X_ref = self.T_i_c.transform_to(bearings_scaled)
-            # 2. Transform point from IMU to world frame
-            X = R_w_i_ref.rotate(X_ref) + th.Point3(tensor=t_w_i_ref)
-            # 3. Transform point from world to IMU reference frame at observation   Vector3 X = R_ref_w_i * X_ref + t_ref_w_i;
-            X_obs = R_w_i_obs.inverse().rotate(X - th.Point3(t_w_i_obs))
-            # 4. Transform point from IMU reference frame to camera frame
-            X_camera = self.T_c_i.transform_to(X_obs)
-
-            x_camera = self.cam_matrix.tensor @ X_camera.tensor.unsqueeze(-1)
-
-            repro_error = x_camera[:,:2,0] / x_camera[:,2] - obs_obs
-        # print("Mean reprojection error: {:.3f}".format(torch.mean(repro_error)))
-        # print("Number of residuals: ",repro_error.shape[0])
-        # print("Time to evaluate residuals: {:.3f}s".format(time.time()-start))
-
-        # return size num_obs x 2
-        return repro_error
-
-    def add_rs_view(self, view, view_id, recon):
+    def add_rs_view(self, view, view_id, recon, optim_inv_depth=True):
         
         #with torch.no_grad():
         # iterate observations of that view
         tracks = view.TrackIds()
-
-        aux_vars = []
 
         # pass knot ids to optimizer,
         # we unfold those in the cost function
@@ -288,13 +288,6 @@ class SplineEstimator3D(nn.Module):
             if not suc:
                 print("time calc failed")
                 continue
-        
-            knot_ids = torch.zeros((1,self.N,4)).int()
-            knot_us = torch.zeros((1,4)).float()
-            bearings = torch.zeros((1,3)).float()
-            inv_depths = torch.zeros((1,1)).float()
-            ref_obs = torch.zeros((1,2)).float()
-            obs_obs = torch.zeros((1,2)).float()
 
             # create knots id lists. starting from s_* until s_*+self.N
             knot_ids_ref_so3 = list(range(s_so3_ref,s_so3_ref+self.N))
@@ -331,38 +324,37 @@ class SplineEstimator3D(nn.Module):
 
             optim_vars = [self.so3_spline.knots[idx] for idx in knots_in_cost_ids_so3]
             optim_vars.extend([self.r3_spline.knots[idx] for idx in knots_in_cost_ids_r3])
-            
-            # get local indices of knots
-            knot_us[0,:] = torch.tensor([u_so3_ref, u_r3_ref, u_so3_obs, u_r3_obs])
 
-            bearings[0,:] = torch.tensor(
+            # get local indices of knots
+            knot_us = torch.tensor([u_so3_ref, u_r3_ref, u_so3_obs, u_r3_obs]).unsqueeze(0)
+            bearings = torch.tensor(
                 recon.Track(t_id).ReferenceBearingVector()).float().unsqueeze(0).to(self.device)
-            inv_depths[0,:] = torch.tensor(
+            inv_depths = torch.tensor(
                 recon.Track(t_id).InverseDepth()).float().unsqueeze(0).to(self.device)
-            ref_obs[0,:] = torch.tensor(
+            ref_obs = torch.tensor(
                 ref_view.GetFeature(t_id).point).float().unsqueeze(0).to(self.device)
-            obs_obs[0,:] = torch.tensor(
+            obs_obs = torch.tensor(
                 view.GetFeature(t_id).point).float().unsqueeze(0).to(self.device)
 
             aux_vars = [
-                th.Variable(tensor=knot_start_ids.float().to(self.device), name="knot_ids_"+str(view_id)+"_"+str(t_idx_loop)),
                 th.Variable(tensor=knot_us.float().to(self.device), name="knot_us_"+str(view_id)+"_"+str(t_idx_loop)),
                 th.Variable(tensor=bearings.float().to(self.device), name="bearings_"+str(view_id)+"_"+str(t_idx_loop)),
                 th.Variable(tensor=inv_depths.float().to(self.device), name="inv_depths_"+str(view_id)+"_"+str(t_idx_loop)),
                 th.Variable(tensor=ref_obs.float().to(self.device), name="ref_obs_"+str(view_id)+"_"+str(t_idx_loop)),
                 th.Variable(tensor=obs_obs.float().to(self.device), name="obs_obs_"+str(view_id)+"_"+str(t_idx_loop)),
             ]
-
             cost_function = th.AutoDiffCostFunction(
                 optim_vars, 
-                self._rs_error, 
+                RSError(knot_start_ids.squeeze(0), knot_us,
+                        self.line_delay, [self.inv_dt_so3, self.inv_dt_r3], 
+                        self.T_i_c, self.cam_matrix), 
                 2, 
-                cost_weight=ScaleCostWeight(scale=torch.tensor(1.0).float().to(self.device)),
                 aux_vars=aux_vars,
+                cost_weight=ScaleCostWeight(scale=torch.tensor(1.0).float().to(self.device)),
                 name="rs_repro_cost_"+str(view_id)+"_"+str(t_idx_loop), 
-                autograd_vectorize=False, 
-                autograd_mode=th.AutogradMode.LOOP_BATCH,
-                autograd_strict=True)
+                autograd_vectorize=True, 
+                autograd_mode=th.AutogradMode.VMAP,
+                autograd_strict=False)
 
             # robust_cost_function = th.RobustCostFunction(
             #     cost_function,
@@ -378,14 +370,15 @@ class SplineEstimator3D(nn.Module):
     def init_optimizer(self):
         self.spline_optimizer = th.LevenbergMarquardt(
             self.objective,
-            max_iterations=1,
+            max_iterations=15,
             step_size=0.5,
             vectorize=True,
             linearization_cls=th.SparseLinearization,
-            linear_solver_cls=th.CholmodSparseSolver
+            linear_solver_cls=th.CholmodSparseSolver if self.device == "cpu" else th.LUCudaSparseSolver
         )
         self.spline_optimizer_layer = th.TheseusLayer(self.spline_optimizer)
-        self.spline_optimizer_layer.to(self.device)
+        # self.spline_optimizer_layer.to(self.device)
+
 
     def forward(self):
         # get inputs
@@ -398,7 +391,7 @@ class SplineEstimator3D(nn.Module):
 
         sol, info = self.spline_optimizer_layer.forward(
             self.theseus_inputs, optimizer_kwargs={
-                "damping": 1.0, 
+                "damping": 0.1, 
                 "track_best_solution": True, 
                 "verbose": True}
         )
@@ -414,14 +407,15 @@ T_i_c = th.SE3(x_y_z_quaternion=torch.tensor([[
     0.013991958832708196,-0.040766470166917895,0.01589418686420154,
     0.0017841953862121206,-0.0014240956361964555,-0.7055056377782172,0.7087006304932949]]).float()).tensor.squeeze()
 
+device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
 est = SplineEstimator3D(4, 0.1*time_util.S_TO_NS, 
-    0.1*time_util.S_TO_NS, T_i_c, cam_matrix)
+    0.1*time_util.S_TO_NS, T_i_c, cam_matrix, device)
 est.init_spline_with_vision(recon)
 
 for v in sorted(recon.ViewIds)[3:]:
     est.add_rs_view(recon.View(v),  v, recon)
     print("added view: ",v)
-    if v > 4:
+    if v > 5:
         break
 
 est.init_optimizer()
