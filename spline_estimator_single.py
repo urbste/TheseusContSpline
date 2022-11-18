@@ -13,94 +13,7 @@ from scipy.spatial.transform import Slerp
 from spline_helper import SplineHelper
 import time_util
 import time
-import torch.autograd.profiler as profiler
-
-
-class RSError:
-    def __init__(self, knot_start_ids):
-
-        self.so3_knot_idx_ref, self.so3_knot_idx_obs = knot_start_ids[:,0], knot_start_ids[:,1]
-        self.r3_knot_idx_ref, self.r3_knot_idx_obs = knot_start_ids[:,2], knot_start_ids[:,3]
-
-        self.bearing = bearing
-        self.ref_obs, self.obs_obs  = observatons[0], observatons[1]
-        self.inv_depth = inv_depth
-        self.norm_time = u
-        self.line_delay = ld
-        self.inv_dt_so3, self.inv_dt_r3 = inv_dts[0], inv_dts[1]
-        self.spline_helper = SplineHelper(4, "cpu")
-        self.T_i_c = T_i_c 
-        self.T_c_i = T_i_c.inverse()
-        self.cam_matrix = cam_matrix
-
-    def __call__(self, optim_vars, aux_vars):
-        so3_knots_ = optim_vars[: len(optim_vars) // 2]  # each (B, 3, 3)
-        r3_knots_ = optim_vars[len(optim_vars) // 2 :]   # each (B, 3)
-        
-        # Shapes will be (4, B, 3, 3) and (4, B, 3)
-        so3_knots_tensor_ref_ = torch.stack(
-            [so3_knots_[i].tensor for i in self.so3_knot_idx_ref], dim=0)
-        so3_knots_tensor_obs_ = torch.stack(
-            [so3_knots_[i].tensor for i in self.so3_knot_idx_obs], dim=0)
-
-        r3_knots_tensor_ref_ = torch.stack(
-            [r3_knots_[i].tensor for i in self.r3_knot_idx_ref], dim=0)
-        r3_knots_tensor_obs_ = torch.stack(
-            [r3_knots_[i].tensor for i in self.r3_knot_idx_obs], dim=0)
-
-        u_so3_ref = self.norm_time[0]
-        u_r3_ref = self.norm_time[1]
-        u_so3_obs = self.norm_time[2]
-        u_r3_obs = self.norm_time[3]
-
-        y_coord_ref_t_ns = self.ref_obs[:,1] * self.line_delay.tensor[0]
-        y_coord_obs_t_ns = self.obs_obs[:,1] * self.line_delay.tensor[0]
-
-        u_ld_ref_so3 = y_coord_ref_t_ns * self.inv_dt_so3.tensor[0] + u_so3_ref
-        u_ld_ref_r3 = y_coord_ref_t_ns * self.inv_dt_r3.tensor[0] + u_r3_ref
-
-        u_ld_obs_so3 = y_coord_obs_t_ns * self.inv_dt_so3.tensor[0] + u_so3_obs
-        u_ld_obs_r3 = y_coord_obs_t_ns * self.inv_dt_r3.tensor[0] + u_r3_obs
-
-        num_obs = self.ref_obs.shape[0]
-        # evalute reference rolling shutter pose
-        R_w_i_ref = self.spline_helper.evaluate_lie_vec(
-            so3_knots_tensor_ref_, u_ld_ref_so3, 
-            self.inv_dt_so3.tensor, derivatives=0, num_meas=num_obs)[0]
-
-        t_w_i_ref = self.spline_helper.evaluate_euclidean_vec(
-            r3_knots_tensor_ref_, u_ld_ref_r3, 
-            self.inv_dt_r3.tensor, derivatives=0, num_meas=num_obs)
-
-        R_w_i_obs = self.spline_helper.evaluate_lie_vec(
-            so3_knots_tensor_obs_, u_ld_obs_so3, 
-            self.inv_dt_so3.tensor, derivatives=0, num_meas=num_obs)[0]
-
-        t_w_i_obs = self.spline_helper.evaluate_euclidean_vec(
-            r3_knots_tensor_obs_, u_ld_obs_r3, 
-            self.inv_dt_r3.tensor, derivatives=0, num_meas=num_obs)
-
-        # project point to camera
-        depths = 1. / self.inv_depth
-        bearings_scaled = depths * self.bearing
-
-        # 1. convert point from bearing vector to 3d point using
-        # inverse depth from reference view and transform from camera to IMU
-        # reference frame
-        X_ref = self.T_i_c.transform_to(bearings_scaled)
-        # 2. Transform point from IMU to world frame
-        X = R_w_i_ref.rotate(X_ref) + th.Point3(tensor=t_w_i_ref)
-        # 3. Transform point from world to IMU reference frame at observation   Vector3 X = R_ref_w_i * X_ref + t_ref_w_i;
-        X_obs = R_w_i_obs.inverse().rotate(X - th.Point3(t_w_i_obs))
-        # 4. Transform point from IMU reference frame to camera frame
-        X_camera = self.T_c_i.transform_to(X_obs)
-
-        x_camera = self.cam_matrix.tensor @ X_camera.tensor.unsqueeze(-1)
-
-        repro_error = x_camera[:,:2,0] / x_camera[:,2] - self.obs_obs
-
-        return repro_error
-    
+from reprojection_errors import RSError
 
 class SplineEstimator3D(nn.Module):
     def __init__(self, N, dt_ns_so3, dt_ns_r3, T_i_c, cam_matrix, device):
@@ -151,8 +64,10 @@ class SplineEstimator3D(nn.Module):
         self.spline_helper = SplineHelper(N, self.device)
         
         self.cnt_repro_err = 0
+        self.repro_cost_weight = ScaleCostWeight(scale=torch.tensor(1.0).float().to(self.device),
+            name="repro_cost_weight")
 
-        self.robust_loss = th.HuberLoss()
+        self.robust_loss_cls = th.HuberLoss
 
     def reinit_spline_with_times(self, start_ns, end_ns):
         self.so3_spline.start_time_ns = start_ns
@@ -343,28 +258,34 @@ class SplineEstimator3D(nn.Module):
                 th.Variable(tensor=ref_obs.float().to(self.device), name="ref_obs_"+str(view_id)+"_"+str(t_idx_loop)),
                 th.Variable(tensor=obs_obs.float().to(self.device), name="obs_obs_"+str(view_id)+"_"+str(t_idx_loop)),
             ]
+
             cost_function = th.AutoDiffCostFunction(
                 optim_vars, 
-                RSError(knot_start_ids.squeeze(0), knot_us,
+                RSError(knot_start_ids.squeeze(0),
                         self.line_delay, [self.inv_dt_so3, self.inv_dt_r3], 
                         self.T_i_c, self.cam_matrix), 
                 2, 
                 aux_vars=aux_vars,
-                cost_weight=ScaleCostWeight(scale=torch.tensor(1.0).float().to(self.device)),
+                cost_weight=self.repro_cost_weight,
                 name="rs_repro_cost_"+str(view_id)+"_"+str(t_idx_loop), 
                 autograd_vectorize=True, 
                 autograd_mode=th.AutogradMode.VMAP,
                 autograd_strict=False)
 
-            # robust_cost_function = th.RobustCostFunction(
-            #     cost_function,
-            #     th.HuberLoss,
-            #     torch.tensor(3.0).float().to(self.device))
-            # cost_function.jacobians()
-            self.objective.add(cost_function)
+            log_loss_radius = th.Vector(
+                tensor=torch.tensor(5).float().to(self.device).unsqueeze(0),
+                name="log_loss_radius"+str(view_id)+"_"+str(t_idx_loop))
+
+            robust_cost_function = th.RobustCostFunction(
+                cost_function,
+                self.robust_loss_cls,
+                log_loss_radius=log_loss_radius)
+
+            self.objective.add(robust_cost_function)
 
             self.cnt_repro_err += 1
             added_res_for_view += 1
+        
         print("Added {} residuals for view {}".format(added_res_for_view,view_id))
 
     def init_optimizer(self):
@@ -377,8 +298,7 @@ class SplineEstimator3D(nn.Module):
             linear_solver_cls=th.CholmodSparseSolver if self.device == "cpu" else th.LUCudaSparseSolver
         )
         self.spline_optimizer_layer = th.TheseusLayer(self.spline_optimizer)
-        # self.spline_optimizer_layer.to(self.device)
-
+        self.spline_optimizer_layer.to(self.device)
 
     def forward(self):
         # get inputs
@@ -403,24 +323,23 @@ recon = pt.io.ReadReconstruction("spline_recon_run1.recon")[1]
 
 cam_matrix = recon.View(0).Camera().GetCalibrationMatrix()
 
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
 T_i_c = th.SE3(x_y_z_quaternion=torch.tensor([[
     0.013991958832708196,-0.040766470166917895,0.01589418686420154,
-    0.0017841953862121206,-0.0014240956361964555,-0.7055056377782172,0.7087006304932949]]).float()).tensor.squeeze()
+    0.0017841953862121206,-0.0014240956361964555,-0.7055056377782172,0.7087006304932949]])).tensor.squeeze()
 
-device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
 est = SplineEstimator3D(4, 0.1*time_util.S_TO_NS, 
     0.1*time_util.S_TO_NS, T_i_c, cam_matrix, device)
 est.init_spline_with_vision(recon)
 
-for v in sorted(recon.ViewIds)[3:]:
+for v in sorted(recon.ViewIds)[1:]:
     est.add_rs_view(recon.View(v),  v, recon)
     print("added view: ",v)
-    if v > 5:
+    if v > 10:
         break
 
 est.init_optimizer()
-#with profiler.profile(with_stack=True, profile_memory=False) as prof:
 est.forward()
 
 
-#print(prof.key_averages(group_by_stack_n=5).table(sort_by='self_cpu_time_total', row_limit=5))

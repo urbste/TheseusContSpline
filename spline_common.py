@@ -67,13 +67,15 @@ def computeBaseCoefficientsWithTime(N, base_coeffs, derivative, u):
     return res
 
 def computeBaseCoefficientsWithTimeVec(N, base_coeffs, derivative, u, num_pts):
-    res = torch.zeros(N,num_pts).float().to(base_coeffs.device)
 
+    results = []
     if derivative < N:
-        res[derivative,:] = base_coeffs[derivative, derivative]
+        for _ in range(0,derivative):
+            results.append(torch.tensor([0.]).repeat(num_pts))
+        results.append(base_coeffs[derivative, derivative].repeat(num_pts))
         _t = u
         for j in range(derivative+1, N):
-            res[j,:] = base_coeffs[derivative, j] * _t
+            results.append(base_coeffs[derivative, j] * _t)
             _t = _t * u
 
-    return res
+    return torch.stack(results,0)
