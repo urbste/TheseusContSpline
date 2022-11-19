@@ -1,4 +1,4 @@
-# created by Steffen Urban
+# created by Steffen Urban, 11/2022
 # Adapted from https://gitlab.com/VladyslavUsenko/basalt-headers
 import numpy as np
 import math

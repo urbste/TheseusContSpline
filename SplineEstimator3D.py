@@ -13,6 +13,7 @@ from scipy.spatial.transform import Slerp
 from spline.spline_helper import SplineHelper
 import spline.time_util as time_util
 from residuals.camera import RollingShutterInvDepthRes, GlobalShutterInvDepthRes
+from residuals.camera import RollingShutterPoseRes, GlobalShutterPoseRes
 from residuals.imu import GyroscopeRes, AccelerometerRes
 
 torch.set_default_dtype(torch.float64)
@@ -29,6 +30,8 @@ class SplineEstimator3D(nn.Module):
 
         self.r3_knots_in_problem = []
         self.so3_knots_in_problem = []
+        self.inv_depth_in_problem = {}
+        self.inv_depth_opt_variables = {}
 
         # init some variable
         self.dt_ns_so3 = th.Variable(
@@ -169,6 +172,17 @@ class SplineEstimator3D(nn.Module):
             self.optim_vars.append(self.so3_spline.knots[i])
             self.so3_knots_in_problem.append(False)
 
+        # add inverse depth variables
+        for t_id in recon.TrackIds:
+            track = recon.Track(t_id)
+            if track.IsEstimated():
+                inv_depth = torch.tensor(
+                    track.InverseDepth()).unsqueeze(0).to(self.device)
+                name = "inv_depth_"+str(t_id)
+                self.inv_depth_opt_variables[name] = th.Vector(
+                    tensor=inv_depth, name=name)
+                self.inv_depth_in_problem[name] = False
+
     def _calc_time_so3(self, sensor_time_ns):
         return time_util.calc_times(
             sensor_time_ns,
@@ -185,7 +199,9 @@ class SplineEstimator3D(nn.Module):
             len(self.r3_spline.knots),
             self.N)
 
-    def add_view(self, view, view_id, recon, robust_kernel_width=5., rolling_shutter=True):
+    def add_view(self, view, view_id, recon, 
+        robust_kernel_width=5., rolling_shutter=True,
+        optimize_depth=False):
         
         #with torch.no_grad():
         # iterate observations of that view
@@ -254,6 +270,7 @@ class SplineEstimator3D(nn.Module):
             optim_vars = [self.so3_spline.knots[idx] for idx in knots_in_cost_ids_so3]
             start_id_r3 = len(optim_vars)
             optim_vars.extend([self.r3_spline.knots[idx] for idx in knots_in_cost_ids_r3])
+            end_id_r3 = len(optim_vars)
 
             # get local indices of knots
             knot_us = torch.tensor([u_so3_ref, u_r3_ref, u_so3_obs, u_r3_obs]).unsqueeze(0)
@@ -267,38 +284,54 @@ class SplineEstimator3D(nn.Module):
                 view.GetFeature(t_id).point).unsqueeze(0).to(self.device)
 
             aux_vars = [
-                th.Variable(tensor=knot_us.to(self.device), name="knot_us_"+str(view_id)+"_"+str(t_idx_loop)),
-                th.Variable(tensor=bearings.to(self.device), name="bearings_"+str(view_id)+"_"+str(t_idx_loop)),
-                th.Variable(tensor=inv_depths.to(self.device), name="inv_depths_"+str(view_id)+"_"+str(t_idx_loop)),
-                th.Variable(tensor=ref_obs.to(self.device), name="ref_obs_"+str(view_id)+"_"+str(t_idx_loop)),
-                th.Variable(tensor=obs_obs.to(self.device), name="obs_obs_"+str(view_id)+"_"+str(t_idx_loop)),
-            ]
+                th.Variable(tensor=knot_us, name="knot_us_"+str(view_id)+"_"+str(t_idx_loop)),
+                th.Variable(tensor=bearings, name="bearings_"+str(view_id)+"_"+str(t_idx_loop)),
+                th.Variable(tensor=obs_obs, name="obs_obs_"+str(view_id)+"_"+str(t_idx_loop))]
             if rolling_shutter:
-                cost_function = th.AutoDiffCostFunction(
-                    optim_vars, 
-                    RollingShutterInvDepthRes(knot_start_ids.squeeze(0),
-                            self.line_delay, [self.inv_dt_so3, self.inv_dt_r3], 
-                            self.T_i_c, self.cam_matrix, self.spline_helper, 
-                            start_id_r3), 
-                    self.DIM_VIS_ERROR, 
-                    aux_vars=aux_vars,
-                    cost_weight=self.repro_cost_weight,
-                    name="rs_repro_cost_"+str(view_id)+"_"+str(t_idx_loop), 
-                    autograd_vectorize=True, 
-                    autograd_mode=th.AutogradMode.VMAP)
+                aux_vars.append(th.Variable(tensor=ref_obs, name="ref_obs_"+str(view_id)+"_"+str(t_idx_loop)))
+            # idepth
+            if not optimize_depth:
+                inv_depth = th.Variable(tensor=inv_depths, name="inv_depths_"+str(view_id)+"_"+str(t_idx_loop))
+                aux_vars.append(inv_depth)
             else:
-                cost_function = th.AutoDiffCostFunction(
-                    optim_vars, 
-                    GlobalShutterInvDepthRes(knot_start_ids.squeeze(0),
-                            [self.inv_dt_so3, self.inv_dt_r3], 
-                            self.T_i_c, self.cam_matrix, self.spline_helper, 
-                            start_id_r3), 
-                    self.DIM_VIS_ERROR, 
-                    aux_vars=aux_vars,
-                    cost_weight=self.repro_cost_weight,
-                    name="rs_repro_cost_"+str(view_id)+"_"+str(t_idx_loop), 
-                    autograd_vectorize=True, 
-                    autograd_mode=th.AutogradMode.VMAP)
+                idepth_name = "inv_depth_"+str(t_id)
+                if not self.inv_depth_in_problem[idepth_name]:
+                    self.inv_depth_in_problem[idepth_name] = True
+                optim_vars.extend([self.inv_depth_opt_variables[idepth_name]])
+
+            # now select which error function to use
+            if rolling_shutter:
+                if optimize_depth:
+                    err_fn = RollingShutterInvDepthRes(knot_start_ids.squeeze(0),
+                                    self.line_delay, [self.inv_dt_so3, self.inv_dt_r3], 
+                                    self.T_i_c, self.cam_matrix, self.spline_helper, 
+                                    start_id_r3, end_id_r3)
+                else:
+                    err_fn = RollingShutterPoseRes(knot_start_ids.squeeze(0),
+                                    self.line_delay, [self.inv_dt_so3, self.inv_dt_r3], 
+                                    self.T_i_c, self.cam_matrix, self.spline_helper, 
+                                    start_id_r3)
+            else:
+                if optimize_depth:
+                    err_fn =  GlobalShutterInvDepthRes(knot_start_ids.squeeze(0),
+                                [self.inv_dt_so3, self.inv_dt_r3], 
+                                self.T_i_c, self.cam_matrix, self.spline_helper, 
+                                start_id_r3, end_id_r3)     
+                else:
+                    err_fn =  GlobalShutterPoseRes(knot_start_ids.squeeze(0),
+                                [self.inv_dt_so3, self.inv_dt_r3], 
+                                self.T_i_c, self.cam_matrix, self.spline_helper, 
+                                start_id_r3)
+   
+            cost_function = th.AutoDiffCostFunction(
+                optim_vars = optim_vars,
+                err_fn = err_fn,
+                dim = self.DIM_VIS_ERROR, 
+                aux_vars=aux_vars,
+                cost_weight=self.repro_cost_weight,
+                name="rs_repro_cost_"+str(view_id)+"_"+str(t_idx_loop), 
+                autograd_vectorize=True, 
+                autograd_mode=th.AutogradMode.VMAP)
 
             log_loss_radius = th.Vector(
                 tensor=torch.tensor(robust_kernel_width).to(self.device).unsqueeze(0),
@@ -412,6 +445,11 @@ class SplineEstimator3D(nn.Module):
         for idx, knot in enumerate(self.so3_spline.knots):
             if self.so3_knots_in_problem[idx]:
                 self.theseus_inputs[knot.name] = knot
+        # add inv_depth
+        for dname in self.inv_depth_opt_variables:
+            if self.inv_depth_in_problem[dname]:
+                var = self.inv_depth_opt_variables[dname]
+                self.theseus_inputs[var.name] = var
 
         sol, info = self.spline_optimizer_layer.forward(
             self.theseus_inputs, optimizer_kwargs={

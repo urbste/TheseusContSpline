@@ -14,13 +14,13 @@ recon = pt.io.ReadReconstruction("test_data/spline_recon_run1.recon")[1]
 
 cam_matrix = recon.View(0).Camera().GetCalibrationMatrix()
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
 T_i_c = th.SE3(x_y_z_quaternion=torch.tensor([[
     0.013991958832708196,-0.040766470166917895,0.01589418686420154,
     0.0017841953862121206,-0.0014240956361964555,-0.7055056377782172,0.7087006304932949]])).tensor.squeeze()
 
 sorted_vids = sorted(recon.ViewIds)
-max_id = 4
+max_id = 20
 max_ts = recon.View(max_id).GetTimestamp()
 spline_degree = 4
 r3_dt_ns = 0.1 * time_util.S_TO_NS
@@ -34,7 +34,8 @@ est.init_spline_with_vision(recon, max_time_s=max_ts)
 
 for v in sorted(recon.ViewIds)[1:]:
     est.add_view(recon.View(v),  v, recon, 
-        robust_kernel_width=5.,rolling_shutter=False)
+        robust_kernel_width=5.,
+        rolling_shutter=True,optimize_depth=True)
     print("added view: ",v)
     if v > max_id:
         break
