@@ -9,11 +9,11 @@ class InvDepthCamProjection:
         self.T_c_i = T_i_c.inverse()
         self.cam_matrix = cam_matrix
 
-    def project(self, bearings, inv_depths, R_w_i_ref, 
-            t_w_i_ref, R_w_i_obs, t_w_i_obs):
+    def project(self, bearings, inv_depths, 
+            t_w_i_ref, R_w_i_ref,  
+            R_w_i_obs, t_w_i_obs):
         # project point to camera
-        depths = 1. / inv_depths
-        bearings_scaled = depths.unsqueeze(-1) * bearings
+        bearings_scaled = bearings / inv_depths.unsqueeze(-1)
 
         # 1. convert point from bearing vector to 3d point using
         # inverse depth from reference view and transform from camera to IMU

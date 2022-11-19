@@ -381,7 +381,6 @@ class SplineEstimator3D(nn.Module):
         self.cnt_accl_res += 1
 
     def add_gyroscope(self, gyroscope, sensor_times_ns, weighting):
-        
         print("Adding gyroscope residuals.")
         for idx, t_ns in enumerate(sensor_times_ns):
             self.add_gyro_reading(gyroscope[idx], t_ns, weighting)
