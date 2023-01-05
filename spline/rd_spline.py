@@ -48,7 +48,7 @@ class RDSpline:
         u, s, suc = calc_times(time_ns, 
             self.start_time_ns, self.dt_ns, 
             len(self.knots), self.N)  
-        res = torch.zeros(1, self.DIM).float().to(self.device)
+        res = torch.zeros(1, self.DIM).to(self.device)
 
         if not suc:
             print("WRONG TIME")

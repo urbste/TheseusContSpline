@@ -210,9 +210,8 @@ class RollingShutterPoseRes:
 
         u_ld_obs_so3 = y_coord_obs_t_ns * self.inv_dt_so3.tensor[0] + u_so3_obs
         u_ld_obs_r3 = y_coord_obs_t_ns * self.inv_dt_r3.tensor[0] + u_r3_obs
-
-        num_obs = ref_obs.shape[0]
-        # evalute reference rolling shutter pose
+        
+        # evaluate reference rolling shutter pose
         R_w_i_ref = self.spline_helper.evaluate_lie_vec(
             so3_knots_tensor_ref_, u_ld_ref_so3, 
             self.inv_dt_so3.tensor, derivatives=0)[0]
@@ -291,7 +290,6 @@ class RollingShutterInvDepthRes:
         u_ld_obs_so3 = y_coord_obs_t_ns * self.inv_dt_so3.tensor[0] + u_so3_obs
         u_ld_obs_r3 = y_coord_obs_t_ns * self.inv_dt_r3.tensor[0] + u_r3_obs
 
-        num_obs = ref_obs.shape[0]
         # evalute reference rolling shutter pose
         R_w_i_ref = self.spline_helper.evaluate_lie_vec(
             so3_knots_tensor_ref_, u_ld_ref_so3, 

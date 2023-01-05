@@ -15,6 +15,7 @@ import spline.time_util as time_util
 from residuals.camera import RollingShutterInvDepthRes, GlobalShutterInvDepthRes
 from residuals.camera import RollingShutterPoseRes, GlobalShutterPoseRes
 from residuals.imu import GyroscopeRes, AccelerometerRes
+from spline.time_util import calc_times
 
 torch.set_default_dtype(torch.float64)
 torch.set_default_tensor_type(torch.DoubleTensor)
@@ -63,9 +64,11 @@ class SplineEstimator3D(nn.Module):
         self.line_delay = th.Variable(
             tensor=torch.tensor([1/480*1/50]).unsqueeze(0).to(self.device), 
             name="line_delay")
+
         self.cam_matrix = th.Variable(
             tensor=torch.tensor(cam_matrix).unsqueeze(0).to(self.device), 
             name="cam_matrix")
+
         self.gravity = torch.tensor([0., 0., -9.81]).to(self.device)
 
         self.spline_helper = SplineHelper(N, self.device)
@@ -81,6 +84,17 @@ class SplineEstimator3D(nn.Module):
         self.repro_cost_weight = ScaleCostWeight(scale=torch.tensor(1.0).to(self.device),
             name="repro_cost_weight")
         self.robust_loss_cls = th.HuberLoss
+
+    def get_imu_to_world_pose(self, t_ns):
+        T_w_i = th.SE3()
+        T_w_i.update_from_rot_and_trans(
+            rotation=self.so3_spline.evaluate(t_ns), 
+            translation=th.Point3(tensor=self.r3_spline.evaluate(t_ns)))
+        return T_w_i
+
+    def get_camera_to_world_pose(self, t_ns):
+        T_w_i = self.get_imu_to_world_pose(t_ns)
+        return T_w_i.compose(self.T_i_c)
 
     def set_gravity(self, gravity):
         self.gravity = gravity
@@ -413,6 +427,15 @@ class SplineEstimator3D(nn.Module):
         self.objective.add(cost_function)
         self.cnt_accl_res += 1
 
+    def get_reprojection_errors(self):
+        
+        total_error
+        for r_cost in self.objective.cost_functions:
+            cost = r_cost.cost_function
+            if "rs_repro_cost" in cost.name:
+                cost.error
+
+
     def add_gyroscope(self, gyroscope, sensor_times_ns, weighting):
         print("Adding gyroscope residuals.")
         for idx, t_ns in enumerate(sensor_times_ns):
@@ -425,10 +448,10 @@ class SplineEstimator3D(nn.Module):
             self.add_accel_reading(accelerometer[idx], t_ns, weighting)
         print("Added {} accelerometer residuals.".format(self.cnt_accl_res))
 
-    def init_optimizer(self):
+    def init_optimizer(self, nr_iter=20):
         self.spline_optimizer = th.LevenbergMarquardt(
             self.objective,
-            max_iterations=15,
+            max_iterations=nr_iter,
             step_size=0.5,
             vectorize=True,
             linearization_cls=th.SparseLinearization,

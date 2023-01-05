@@ -45,7 +45,7 @@ def computeBaseCoefficients(N):
     return base_coeffs
 
 def computeBaseCoefficientsWithTime(N, base_coeffs, derivative, u):
-    res = torch.zeros(N,1).float().to(base_coeffs.device)
+    res = torch.zeros(N,1).to(base_coeffs.device)
 
     if derivative < N:
         res[derivative] = base_coeffs[derivative, derivative]
