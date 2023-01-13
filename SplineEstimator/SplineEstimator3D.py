@@ -6,16 +6,15 @@ import numpy as np
 import theseus as th
 from theseus.core.cost_function import ScaleCostWeight
 
-from spline.so3_spline import SO3Spline
-from spline.rd_spline import RDSpline
+from .spline.so3_spline import SO3Spline
+from .spline.rd_spline import RDSpline
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
-from spline.spline_helper import SplineHelper
-import spline.time_util as time_util
-from residuals.camera import RollingShutterInvDepthRes, GlobalShutterInvDepthRes
-from residuals.camera import RollingShutterPoseRes, GlobalShutterPoseRes
-from residuals.imu import GyroscopeRes, AccelerometerRes
-from spline.time_util import calc_times
+from .spline.spline_helper import SplineHelper
+from .spline.time_util import NS_TO_S, S_TO_NS, calc_times
+from .residuals.camera import RollingShutterInvDepthRes, GlobalShutterInvDepthRes
+from .residuals.camera import RollingShutterPoseRes, GlobalShutterPoseRes
+from .residuals.imu import GyroscopeRes, AccelerometerRes
 
 torch.set_default_dtype(torch.float64)
 torch.set_default_tensor_type(torch.DoubleTensor)
@@ -43,10 +42,10 @@ class SplineEstimator3D(nn.Module):
             name="dt_ns_r3")
 
         self.inv_dt_so3 = th.Variable(
-            tensor=torch.tensor(time_util.S_TO_NS/dt_ns_so3).unsqueeze(0).to(self.device), 
+            tensor=torch.tensor(S_TO_NS/dt_ns_so3).unsqueeze(0).to(self.device), 
             name="inv_dt_so3")
         self.inv_dt_r3 = th.Variable(
-            tensor=torch.tensor(time_util.S_TO_NS/dt_ns_r3).unsqueeze(0).to(self.device), 
+            tensor=torch.tensor(S_TO_NS/dt_ns_r3).unsqueeze(0).to(self.device), 
             name="inv_dt_r3")
 
         self.gravity = th.Variable(
@@ -57,19 +56,18 @@ class SplineEstimator3D(nn.Module):
         self.theseus_inputs = {}
 
         self.T_i_c = th.SE3(
-            tensor=T_i_c.unsqueeze(0).to(self.device), 
+            tensor=torch.tensor(T_i_c[:3,:4]).unsqueeze(0).to(self.device), 
             name="T_i_c")
         self.T_c_i = self.T_i_c.inverse()
 
         self.line_delay = th.Variable(
             tensor=torch.tensor([1/480*1/50]).unsqueeze(0).to(self.device), 
             name="line_delay")
-
         self.cam_matrix = th.Variable(
             tensor=torch.tensor(cam_matrix).unsqueeze(0).to(self.device), 
             name="cam_matrix")
 
-        self.gravity = torch.tensor([0., 0., -9.81]).to(self.device)
+        self.set_gravity([0., 0., -9.81])
 
         self.spline_helper = SplineHelper(N, self.device)
         
@@ -85,20 +83,16 @@ class SplineEstimator3D(nn.Module):
             name="repro_cost_weight")
         self.robust_loss_cls = th.HuberLoss
 
-    def get_imu_to_world_pose(self, t_ns):
-        T_w_i = th.SE3()
-        T_w_i.update_from_rot_and_trans(
-            rotation=self.so3_spline.evaluate(t_ns), 
-            translation=th.Point3(tensor=self.r3_spline.evaluate(t_ns)))
-        return T_w_i
-
-    def get_camera_to_world_pose(self, t_ns):
-        T_w_i = self.get_imu_to_world_pose(t_ns)
-        return T_w_i.compose(self.T_i_c)
-
     def set_gravity(self, gravity):
-        self.gravity = gravity
-    
+        self.gravity = torch.tensor(gravity).to(self.device).unsqueeze(0)
+        if self.gravity.dim == 1:
+            self.gravity = self.gravity.unsqueeze(0)
+
+    def set_line_delay(self, ld):
+        self.line_delay = th.Variable(
+            tensor=torch.tensor(ld).unsqueeze(0).to(self.device), 
+            name="line_delay")
+
     def reinit_spline_with_times(self, start_ns, end_ns):
         self.so3_spline.start_time_ns = start_ns
         self.r3_spline.start_time_ns = start_ns
@@ -137,19 +131,19 @@ class SplineEstimator3D(nn.Module):
                 break
                 
         self.reinit_spline_with_times(
-            cam_timestamps[0]*time_util.S_TO_NS,
-            cam_timestamps[-1]*time_util.S_TO_NS)
+            cam_timestamps[0]*S_TO_NS,
+            cam_timestamps[-1]*S_TO_NS)
 
         # get spline times
         t_so3_spline, t_r3_spline = [], []
         for i in range(self.num_knots_so3):
-            t_ = (i*self.dt_ns_so3.tensor.cpu().numpy()[0] + self.so3_spline.start_time_ns)*time_util.NS_TO_S
+            t_ = (i*self.dt_ns_so3.tensor.cpu().numpy()[0] + self.so3_spline.start_time_ns)*NS_TO_S
             if t_ >= cam_timestamps[-1]:
                 t_so3_spline.append(t_so3_spline[-1])
             else:
                 t_so3_spline.append(t_)
         for i in range(self.num_knots_r3):
-            t_ = (i*self.dt_ns_r3.tensor.cpu().numpy()[0] + self.r3_spline.start_time_ns)*time_util.NS_TO_S
+            t_ = (i*self.dt_ns_r3.tensor.cpu().numpy()[0] + self.r3_spline.start_time_ns)*NS_TO_S
             if t_ >= cam_timestamps[-1]:
                 t_r3_spline.append(t_r3_spline[-1])
             else:
@@ -198,7 +192,7 @@ class SplineEstimator3D(nn.Module):
                 self.inv_depth_in_problem[name] = False
 
     def _calc_time_so3(self, sensor_time_ns):
-        return time_util.calc_times(
+        return calc_times(
             sensor_time_ns,
             self.so3_spline.start_time_ns,
             self.so3_spline.dt_ns,
@@ -206,20 +200,46 @@ class SplineEstimator3D(nn.Module):
             self.N)
 
     def _calc_time_r3(self, sensor_time_ns):
-        return time_util.calc_times(
+        return calc_times(
             sensor_time_ns,
             self.r3_spline.start_time_ns,
             self.r3_spline.dt_ns,
             len(self.r3_spline.knots),
             self.N)
 
-    def add_view(self, view, view_id, recon, 
+    def _to_t(self, np_val):
+        return torch.tensor(np_val)
+
+    def get_angular_velocity(self, t_ns):
+        return self.so3_spline.velocityBody(self._to_t(t_ns))
+
+    def get_acceleration_body(self, t_ns):
+        R_w_i = self.so3_spline.evaluate(self._to_t(t_ns))
+        acc_world = self.r3_spline.acceleration(self._to_t(t_ns))
+        return R_w_i.inverse().tensor @ (acc_world + self.gravity).unsqueeze(-1)
+
+    def get_imu_to_world_pose(self, t_ns):
+        T_w_i = th.SE3()
+        T_w_i.update_from_rot_and_trans(
+            rotation=self.so3_spline.evaluate(self._to_t(t_ns)), 
+            translation=th.Point3(tensor=self.r3_spline.evaluate(self._to_t(t_ns))))
+        return T_w_i
+
+    def get_camera_to_world_pose(self, t_ns):
+        t_ns_ = torch.tensor(self._to_t(t_ns))
+        T_w_i = self.get_imu_to_world_pose(self._to_t(t_ns))
+        return T_w_i.compose(self.T_i_c)
+
+    def add_view(self, view_id, recon, 
         robust_kernel_width=5., rolling_shutter=True,
         optimize_depth=False):
         
+        view = recon.View(view_id)
         #with torch.no_grad():
         # iterate observations of that view
         tracks = view.TrackIds()
+        if len(tracks) == 0:
+            return
 
         # pass knot ids to optimizer,
         # we unfold those in the cost function
@@ -228,14 +248,14 @@ class SplineEstimator3D(nn.Module):
             ref_view_id = recon.Track(t_id).ReferenceViewId()
             ref_view = recon.View(ref_view_id)
 
-            img_obs_time_ns = time_util.S_TO_NS * (
+            img_obs_time_ns = S_TO_NS * (
                 view.GetTimestamp() + self.line_delay.tensor[0]*view.GetFeature(t_id).point[1])
-            img_ref_time_ns = time_util.S_TO_NS * (
+            img_ref_time_ns = S_TO_NS * (
                 ref_view.GetTimestamp() + self.line_delay.tensor[0]*ref_view.GetFeature(t_id).point[1])
             
             # if ref and obs id are the same, inverse depth can not be estimated
-            if img_obs_time_ns == img_ref_time_ns:
-                continue
+            #if img_obs_time_ns == img_ref_time_ns and optimize_depth:
+            #    continue
 
             u_so3_obs, s_so3_obs, suc1 = self._calc_time_so3(img_obs_time_ns)
             u_r3_obs, s_r3_obs, suc2 = self._calc_time_r3(img_obs_time_ns)
@@ -327,12 +347,12 @@ class SplineEstimator3D(nn.Module):
                                     start_id_r3)
             else:
                 if optimize_depth:
-                    err_fn =  GlobalShutterInvDepthRes(knot_start_ids.squeeze(0),
+                    err_fn = GlobalShutterInvDepthRes(knot_start_ids.squeeze(0),
                                 [self.inv_dt_so3, self.inv_dt_r3], 
                                 self.T_i_c, self.cam_matrix, self.spline_helper, 
                                 start_id_r3, end_id_r3)     
                 else:
-                    err_fn =  GlobalShutterPoseRes(knot_start_ids.squeeze(0),
+                    err_fn = GlobalShutterPoseRes(knot_start_ids.squeeze(0),
                                 [self.inv_dt_so3, self.inv_dt_r3], 
                                 self.T_i_c, self.cam_matrix, self.spline_helper, 
                                 start_id_r3)
@@ -384,7 +404,7 @@ class SplineEstimator3D(nn.Module):
             GyroscopeRes(self.inv_dt_so3, self.spline_helper), 
             self.DIM_IMU_ERROR, 
             aux_vars=aux_vars,
-            cost_weight=self.repro_cost_weight,
+            cost_weight=weight,
             name="gyro_cost_"+str(self.cnt_gyro_res), 
             autograd_vectorize=True, 
             autograd_mode=th.AutogradMode.VMAP)
@@ -419,7 +439,7 @@ class SplineEstimator3D(nn.Module):
                 self.spline_helper, self.gravity), 
             self.DIM_IMU_ERROR, 
             aux_vars=aux_vars,
-            cost_weight=self.repro_cost_weight,
+            cost_weight=weight,
             name="accl_cost_"+str(self.cnt_accl_res), 
             autograd_vectorize=True, 
             autograd_mode=th.AutogradMode.VMAP)
@@ -427,33 +447,29 @@ class SplineEstimator3D(nn.Module):
         self.objective.add(cost_function)
         self.cnt_accl_res += 1
 
-    def get_reprojection_errors(self):
-        
-        total_error
-        for r_cost in self.objective.cost_functions:
-            cost = r_cost.cost_function
-            if "rs_repro_cost" in cost.name:
-                cost.error
-
-
     def add_gyroscope(self, gyroscope, sensor_times_ns, weighting):
         print("Adding gyroscope residuals.")
+        self.gyr_weight = ScaleCostWeight(scale=torch.tensor(weighting).to(self.device),
+                name="accl_cost_weight")
         for idx, t_ns in enumerate(sensor_times_ns):
-            self.add_gyro_reading(gyroscope[idx], t_ns, weighting)
+            self.add_gyro_reading(gyroscope[idx], t_ns, self.gyr_weight)
         print("Added {} gyro residuals.".format(self.cnt_gyro_res))
     
     def add_accelerometer(self, accelerometer, sensor_times_ns, weighting):
         print("Adding accelerometer residuals.")
+        self.acc_weight = ScaleCostWeight(scale=torch.tensor(weighting).to(self.device),
+                name="accl_cost_weight")
         for idx, t_ns in enumerate(sensor_times_ns):
-            self.add_accel_reading(accelerometer[idx], t_ns, weighting)
+            self.add_accel_reading(accelerometer[idx], t_ns, self.acc_weight)
         print("Added {} accelerometer residuals.".format(self.cnt_accl_res))
 
-    def init_optimizer(self, nr_iter=20):
+    def init_optimizer(self, maxiter=10):
         self.spline_optimizer = th.LevenbergMarquardt(
             self.objective,
-            max_iterations=nr_iter,
-            step_size=0.5,
+            max_iterations=maxiter,
+            step_size=1.0,
             vectorize=True,
+            rel_err_tolerance=1e-4,
             linearization_cls=th.SparseLinearization,
             linear_solver_cls=th.CholmodSparseSolver if self.device == "cpu" else th.LUCudaSparseSolver
         )

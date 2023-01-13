@@ -2,10 +2,10 @@
 
 import theseus as th
 import torch
-from spline.spline_common import computeBaseCoefficients
-from spline.spline_common import computeBlendingMatrix
-from spline.spline_common import computeBaseCoefficientsWithTime
-from spline.time_util import calc_times, S_TO_NS
+from .spline_common import computeBaseCoefficients
+from .spline_common import computeBlendingMatrix
+from .spline_common import computeBaseCoefficientsWithTime
+from .time_util import calc_times, S_TO_NS
 
 
 class RDSpline:

@@ -2,10 +2,10 @@
 
 import theseus as th
 import torch
-from spline.spline_common import computeBaseCoefficients, computeBaseCoefficientsWithTime
-from spline.spline_common import computeBlendingMatrix
-from spline.spline_common import computeBaseCoefficientsWithTime
-from spline.time_util import calc_times, S_TO_NS
+from .spline_common import computeBaseCoefficients, computeBaseCoefficientsWithTime
+from .spline_common import computeBlendingMatrix
+from .spline_common import computeBaseCoefficientsWithTime
+from .time_util import calc_times, S_TO_NS
 
 class SO3Spline:
     def __init__(self, start_time_ns, end_time_ns, dt_ns, N=4, device="cpu"):
@@ -49,11 +49,11 @@ class SO3Spline:
             self.start_time_ns, self.dt_ns, 
             len(self.knots), self.N)  
 
-        res = self.knots[s]
-
         if not suc:
             print("WRONG TIME")
-            return res
+            return self.knots[-1]
+
+        res = self.knots[s]
 
         p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, 0, u)
         coeff = self.blend_matrix.tensor @ p
@@ -71,7 +71,7 @@ class SO3Spline:
         u, s, suc = calc_times(time_ns, 
             self.start_time_ns, self.dt_ns, 
             len(self.knots), self.N)  
-        res = torch.zeros(1, self.DIM).float().to(self.device)
+        res = torch.zeros(1, self.DIM).to(self.device)
 
         if not suc:
             print("WRONG TIME")
@@ -83,7 +83,7 @@ class SO3Spline:
         p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, 1, u)
         dcoeff = self.pow_inv_dt.tensor[:,1] * self.blend_matrix.tensor @ p 
 
-        rot_vel = torch.zeros(3).float().to(self.device)
+        rot_vel = torch.zeros(3).to(self.device)
         
         for i in range(self.DEG):
             p0 = self.knots[s + i]
@@ -99,7 +99,7 @@ class SO3Spline:
         u, s, suc = calc_times(time_ns, 
             self.start_time_ns, self.dt_ns, 
             len(self.knots), self.N)  
-        res = torch.zeros(self.DIM, 1).float().to(self.device)
+        res = torch.zeros(self.DIM, 1).to(self.device)
 
         if not suc:
             print("WRONG TIME")
@@ -114,9 +114,9 @@ class SO3Spline:
         p = computeBaseCoefficientsWithTime(self.N, self.base_coeffs, 2, u)
         ddcoeff = self.pow_inv_dt.tensor[:,2] * self.blend_matrix.tensor @ p 
         
-        rot_vel = torch.zeros(3).float().to(self.device)
+        rot_vel = torch.zeros(3).to(self.device)
 
-        rot_accel = torch.zeros(3).float().to(self.device)
+        rot_accel = torch.zeros(3).to(self.device)
 
         for i in range(self.DEG):
             p0 = self.knots[s + i]

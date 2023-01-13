@@ -1,9 +1,9 @@
 # created by Steffen Urban, 11/2022
 import torch
 import theseus as th
-from spline.spline_common import computeBaseCoefficients, computeBaseCoefficientsWithTimeVec
-from spline.spline_common import computeBlendingMatrix
-from spline.spline_common import computeBaseCoefficientsWithTime
+from .spline_common import computeBaseCoefficients, computeBaseCoefficientsWithTimeVec
+from .spline_common import computeBlendingMatrix
+from .spline_common import computeBaseCoefficientsWithTime
 
 class SplineHelper:
 
