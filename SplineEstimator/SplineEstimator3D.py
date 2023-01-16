@@ -32,6 +32,7 @@ class SplineEstimator3D(nn.Module):
         self.so3_knots_in_problem = []
         self.inv_depth_in_problem = {}
         self.inv_depth_opt_variables = {}
+        self.misc_opt_vars = {}
 
         # init some variable
         self.dt_ns_so3 = th.Variable(
@@ -79,8 +80,14 @@ class SplineEstimator3D(nn.Module):
         # visual residuals
         self.DIM_VIS_ERROR = 2
         self.cnt_repro_err = 0
-        self.repro_cost_weight = ScaleCostWeight(scale=torch.tensor(1.0).to(self.device),
+        self.repro_weight = th.Vector(tensor=
+            torch.tensor([[1.0]]).to(self.device), name="repro_weight")
+        self.repro_cost_weight = ScaleCostWeight(
+            scale=self.repro_weight, 
             name="repro_cost_weight")
+        self.log_loss_radius = th.Vector(
+            tensor=torch.tensor([[1.0]]).to(self.device),
+            name="log_loss_radius")
         self.robust_loss_cls = th.HuberLoss
 
     def set_gravity(self, gravity):
@@ -100,8 +107,8 @@ class SplineEstimator3D(nn.Module):
         self.r3_spline.end_time_ns = end_ns
 
         duration = end_ns-start_ns
-        self.num_knots_so3 = (duration / self.dt_ns_so3.tensor[0] + self.N).int()
-        self.num_knots_r3 = (duration / self.dt_ns_r3.tensor[0] + self.N).int()
+        self.num_knots_so3 = (duration / self.dt_ns_so3.tensor[0] + self.N+1).int()
+        self.num_knots_r3 = (duration / self.dt_ns_r3.tensor[0] + self.N+1).int()
 
     # input theia reconstruction
     def init_spline_with_vision(self, recon, max_time_s):
@@ -300,6 +307,7 @@ class SplineEstimator3D(nn.Module):
 
             knot_start_ids = torch.arange(0,self.N).repeat(1,4).reshape(4,self.N).T + torch.tensor(
                 [[[start_idx_ref_so3,start_idx_obs_so3,start_idx_ref_r3, start_idx_obs_r3]]])
+            knot_start_ids = knot_start_ids.to(self.device).squeeze(0)
 
             optim_vars = [self.so3_spline.knots[idx] for idx in knots_in_cost_ids_so3]
             start_id_r3 = len(optim_vars)
@@ -307,7 +315,8 @@ class SplineEstimator3D(nn.Module):
             end_id_r3 = len(optim_vars)
 
             # get local indices of knots
-            knot_us = torch.tensor([u_so3_ref, u_r3_ref, u_so3_obs, u_r3_obs]).unsqueeze(0)
+            knot_us = torch.tensor(
+                [u_so3_ref, u_r3_ref, u_so3_obs, u_r3_obs]).unsqueeze(0).to(self.device)
             bearings = torch.tensor(
                 recon.Track(t_id).ReferenceBearingVector()).unsqueeze(0).to(self.device)
             inv_depths = torch.tensor(
@@ -336,23 +345,23 @@ class SplineEstimator3D(nn.Module):
             # now select which error function to use
             if rolling_shutter:
                 if optimize_depth:
-                    err_fn = RollingShutterInvDepthRes(knot_start_ids.squeeze(0),
+                    err_fn = RollingShutterInvDepthRes(knot_start_ids,
                                     self.line_delay, [self.inv_dt_so3, self.inv_dt_r3], 
                                     self.T_i_c, self.cam_matrix, self.spline_helper, 
                                     start_id_r3, end_id_r3)
                 else:
-                    err_fn = RollingShutterPoseRes(knot_start_ids.squeeze(0),
+                    err_fn = RollingShutterPoseRes(knot_start_ids,
                                     self.line_delay, [self.inv_dt_so3, self.inv_dt_r3], 
                                     self.T_i_c, self.cam_matrix, self.spline_helper, 
                                     start_id_r3)
             else:
                 if optimize_depth:
-                    err_fn = GlobalShutterInvDepthRes(knot_start_ids.squeeze(0),
+                    err_fn = GlobalShutterInvDepthRes(knot_start_ids,
                                 [self.inv_dt_so3, self.inv_dt_r3], 
                                 self.T_i_c, self.cam_matrix, self.spline_helper, 
                                 start_id_r3, end_id_r3)     
                 else:
-                    err_fn = GlobalShutterPoseRes(knot_start_ids.squeeze(0),
+                    err_fn = GlobalShutterPoseRes(knot_start_ids,
                                 [self.inv_dt_so3, self.inv_dt_r3], 
                                 self.T_i_c, self.cam_matrix, self.spline_helper, 
                                 start_id_r3)
@@ -367,14 +376,12 @@ class SplineEstimator3D(nn.Module):
                 autograd_vectorize=True, 
                 autograd_mode=th.AutogradMode.VMAP)
 
-            log_loss_radius = th.Vector(
-                tensor=torch.tensor(robust_kernel_width).to(self.device).unsqueeze(0),
-                name="log_loss_radius"+str(view_id)+"_"+str(t_idx_loop))
 
             robust_cost_function = th.RobustCostFunction(
                 cost_function,
                 self.robust_loss_cls,
-                log_loss_radius=log_loss_radius)
+                log_loss_radius=self.log_loss_radius,
+                name="robust_rs_repro_cost_"+str(view_id)+"_"+str(t_idx_loop))
 
             self.objective.add(robust_cost_function)
 
@@ -449,25 +456,31 @@ class SplineEstimator3D(nn.Module):
 
     def add_gyroscope(self, gyroscope, sensor_times_ns, weighting):
         print("Adding gyroscope residuals.")
-        self.gyr_weight = ScaleCostWeight(scale=torch.tensor(weighting).to(self.device),
-                name="accl_cost_weight")
+
+        self.gyr_weight = th.Vector(tensor=weighting.to(self.device),
+            name="gyro_cost_weight")
+
+        gyr_weight = ScaleCostWeight(scale=self.gyr_weight)
         for idx, t_ns in enumerate(sensor_times_ns):
-            self.add_gyro_reading(gyroscope[idx], t_ns, self.gyr_weight)
+            self.add_gyro_reading(gyroscope[idx], t_ns, gyr_weight)
         print("Added {} gyro residuals.".format(self.cnt_gyro_res))
     
     def add_accelerometer(self, accelerometer, sensor_times_ns, weighting):
         print("Adding accelerometer residuals.")
-        self.acc_weight = ScaleCostWeight(scale=torch.tensor(weighting).to(self.device),
+
+        self.acc_weight = th.Vector(tensor=weighting.to(self.device),
                 name="accl_cost_weight")
+
+        acc_weight = ScaleCostWeight(scale=self.acc_weight)
         for idx, t_ns in enumerate(sensor_times_ns):
-            self.add_accel_reading(accelerometer[idx], t_ns, self.acc_weight)
+            self.add_accel_reading(accelerometer[idx], t_ns, acc_weight)
         print("Added {} accelerometer residuals.".format(self.cnt_accl_res))
 
     def init_optimizer(self, maxiter=10):
         self.spline_optimizer = th.LevenbergMarquardt(
             self.objective,
             max_iterations=maxiter,
-            step_size=1.0,
+            step_size=0.5,
             vectorize=True,
             rel_err_tolerance=1e-4,
             linearization_cls=th.SparseLinearization,
@@ -476,7 +489,7 @@ class SplineEstimator3D(nn.Module):
         self.spline_optimizer_layer = th.TheseusLayer(self.spline_optimizer)
         self.spline_optimizer_layer.to(self.device)
 
-    def forward(self):
+    def forward(self, outer_vars):
         # get inputs
         for idx, knot in enumerate(self.r3_spline.knots):
             if self.r3_knots_in_problem[idx]:
@@ -490,12 +503,15 @@ class SplineEstimator3D(nn.Module):
                 var = self.inv_depth_opt_variables[dname]
                 self.theseus_inputs[var.name] = var
 
+        self.theseus_inputs.update(outer_vars)
+
         sol, info = self.spline_optimizer_layer.forward(
             self.theseus_inputs, optimizer_kwargs={
                 "damping": 0.1, 
-                "track_best_solution": True, 
+                "backward_mode": "implicit",
+                "track_best_solution": False, 
                 "verbose": True}
         )
         print("Optim error: ", info.last_err.item())
-        return sol
+        return sol, info.last_err
 

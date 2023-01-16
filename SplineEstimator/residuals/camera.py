@@ -154,7 +154,7 @@ class GlobalShutterInvDepthRes:
             self.inv_dt_r3.tensor, derivatives=0)
 
         # project point to camera
-        x_camera = self.cam.project(bearings, inv_depths.tensor.squeeze(-1), 
+        x_camera = self.cam.project(bearings, inv_depths.tensor, 
             R_w_i_ref, t_w_i_ref, R_w_i_obs, t_w_i_obs)
 
         repro_error = x_camera - obs_obs
